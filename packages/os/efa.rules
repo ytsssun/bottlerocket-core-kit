@@ -1,0 +1,4 @@
+# Rule for EFA device efa_0
+SUBSYSTEM=="infiniband", KERNEL=="efa_0", ACTION=="add", RUN+="configure_efa"
+
+LABEL="efa_end"

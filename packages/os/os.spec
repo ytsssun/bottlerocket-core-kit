@@ -64,6 +64,7 @@ Source204: storewolf-tmpfiles.conf
 Source300: ephemeral-storage.rules
 Source301: ebs-volumes.rules
 Source302: supplemental-storage.rules
+Source303: neuron.rules
 
 # 4xx sources: Bottlerocket licenses
 Source400: COPYRIGHT
@@ -507,6 +508,7 @@ install -d %{buildroot}%{_cross_udevrulesdir}
 install -p -m 0644 %{S:300} %{buildroot}%{_cross_udevrulesdir}/80-ephemeral-storage.rules
 install -p -m 0644 %{S:301} %{buildroot}%{_cross_udevrulesdir}/81-ebs-volumes.rules
 install -p -m 0644 %{S:302} %{buildroot}%{_cross_udevrulesdir}/82-supplemental-storage.rules
+install -p -m 0644 %{S:303} %{buildroot}%{_cross_udevrulesdir}/80-neuron.rules
 
 %cross_scan_attribution --clarify %{_builddir}/sources/clarify.toml \
     cargo --offline --locked %{_builddir}/sources/Cargo.toml
@@ -579,6 +581,7 @@ install -p -m 0644 %{S:400} %{S:401} %{S:402} %{buildroot}%{_cross_licensedir}
 %{_cross_udevrulesdir}/80-ephemeral-storage.rules
 %{_cross_udevrulesdir}/81-ebs-volumes.rules
 %{_cross_udevrulesdir}/82-supplemental-storage.rules
+%{_cross_udevrulesdir}/80-neuron.rules
 
 %files -n %{_cross_os}signpost
 %{_cross_bindir}/signpost
