@@ -1,0 +1,7 @@
+Patches that changed:
+Patches that were dropped:
+0186-x86-kaslr-Expose-and-use-the-end-of-the-physical-mem.patch
+0188-fou-Fix-null-ptr-deref-in-GRO.patch
+Patches that were added:
+0187-smb-client-fix-UAF-in-smb2_reconnect_server.patch
+0188-AL2023-6.1-Update-ena-driver-to-2.13.0g.patch

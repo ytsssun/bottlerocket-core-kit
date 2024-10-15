@@ -1,0 +1,4061 @@
+From ████████████████████████████████████████ Mon Sep 17 00:00:00 2001
+From: David Arinzon <darinzon@amazon.com>
+Date: Wed, 18 Sep 2024 13:21:12 +0000
+Subject: AL2023-6.1-Update-ena-driver-to-2.13.0g
+
+Signed-off-by: David Arinzon <darinzon@amazon.com>
+---
+ drivers/amazon/net/ena/Makefile          |   6 +-
+ drivers/amazon/net/ena/config.h          |   3 +
+ drivers/amazon/net/ena/ena_admin_defs.h  |  89 ++++-
+ drivers/amazon/net/ena/ena_com.c         | 431 +++++++++++++++++++----
+ drivers/amazon/net/ena/ena_com.h         |  97 ++++-
+ drivers/amazon/net/ena/ena_common_defs.h |   5 +-
+ drivers/amazon/net/ena/ena_eth_com.c     | 200 +++++------
+ drivers/amazon/net/ena/ena_eth_com.h     |  21 +-
+ drivers/amazon/net/ena/ena_eth_io_defs.h |   5 +-
+ drivers/amazon/net/ena/ena_ethtool.c     | 328 +++++++++++++++--
+ drivers/amazon/net/ena/ena_lpc.c         |  22 +-
+ drivers/amazon/net/ena/ena_lpc.h         |   7 +-
+ drivers/amazon/net/ena/ena_netdev.c      | 384 ++++++++++++--------
+ drivers/amazon/net/ena/ena_netdev.h      |  51 ++-
+ drivers/amazon/net/ena/ena_pci_id_tbl.h  |   4 +-
+ drivers/amazon/net/ena/ena_phc.c         |   7 +-
+ drivers/amazon/net/ena/ena_phc.h         |   5 +-
+ drivers/amazon/net/ena/ena_regs_defs.h   |   6 +-
+ drivers/amazon/net/ena/ena_sysfs.c       |  10 +-
+ drivers/amazon/net/ena/ena_sysfs.h       |   4 +-
+ drivers/amazon/net/ena/ena_xdp.c         | 366 +++++++++++--------
+ drivers/amazon/net/ena/ena_xdp.h         |  13 +-
+ drivers/amazon/net/ena/kcompat.h         |  34 +-
+ 23 files changed, 1515 insertions(+), 583 deletions(-)
+
+diff --git a/drivers/amazon/net/ena/Makefile b/drivers/amazon/net/ena/Makefile
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/Makefile
++++ b/drivers/amazon/net/ena/Makefile
+@@ -███,7 +███,7 @@
+ #
+ # Makefile for the Elastic Network Adapter (ENA) device drivers.
+ # ENA Source is: https://github.com/amzn/amzn-drivers.
+-# Current ENA source is based on ena_linux_2.12.3 tag.
++# Current ENA source is based on ena_linux_2.13.0 tag.
+ #
+
+ obj-$(CONFIG_AMAZON_ENA_ETHERNET) += ena.o
+@@ -███,10 +███,6 @@ ena-y := ena_netdev.o ena_ethtool.o ena_lpc.o ena_phc.o ena_xdp.o dim.o \
+
+ ena-$(CONFIG_SYSFS) += ena_sysfs.o
+
+-ifdef TEST_AF_XDP
+-	ccflags-y += -DENA_TEST_AF_XDP
+-endif
+-
+ ccflags-y += -DENA_PHC_INCLUDE
+
+ ccflags-y += -include $(srctree)/drivers/amazon/net/ena/config.h
+diff --git a/drivers/amazon/net/ena/config.h b/drivers/amazon/net/ena/config.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/config.h
++++ b/drivers/amazon/net/ena/config.h
+@@ -███,5 +███,8 @@
+ #define ENA_HAVE_XDP_DO_FLUSH 1
+ #define ENA_HAVE_CPUMASK_LOCAL_SPREAD 1
+ #define ENA_HAVE_UPDATE_AFFINITY_HINT 1
++#define ENA_HAVE_ETHTOOL_OPS_SUPPORTED_COALESCE_PARAMS 1
+ #define ENA_HAVE_ETH_HW_ADDR_SET 1
++#define ENA_NAPI_ALLOC_SKB_EXPLICIT_GFP_MASK 1
++#define ENA_ETHTOOL_NFC_IPV6_SUPPORTED 1
+ #endif /* _ENA_CONFIG_H_ */
+diff --git a/drivers/amazon/net/ena/ena_admin_defs.h b/drivers/amazon/net/ena/ena_admin_defs.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_admin_defs.h
++++ b/drivers/amazon/net/ena/ena_admin_defs.h
+@@ -███,13 +███,16 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
++
+ #ifndef _ENA_ADMIN_H_
+ #define _ENA_ADMIN_H_
+
+ #define ENA_ADMIN_EXTRA_PROPERTIES_STRING_LEN 32
+ #define ENA_ADMIN_EXTRA_PROPERTIES_COUNT     32
+
++#define ENA_ADMIN_FLOW_STEERING_DEVICE_CHOOSE_LOCATION 0xFFFF
++
+ #define ENA_ADMIN_RSS_KEY_PARTS              10
+
+ #define ENA_ADMIN_CUSTOMER_METRICS_SUPPORT_MASK 0x3F
+@@ -███,6 +███,7 @@ enum ena_admin_aq_feature_id {
+	ENA_ADMIN_LINK_CONFIG                       = 27,
+	ENA_ADMIN_HOST_ATTR_CONFIG                  = 28,
+	ENA_ADMIN_PHC_CONFIG                        = 29,
++	ENA_ADMIN_FLOW_STEERING_CONFIG              = 30,
+	ENA_ADMIN_FEATURES_OPCODE_NUM               = 32,
+ };
+
+@@ -███,7 +███,6 @@ enum ena_admin_get_stats_type {
+	/* extra HW stats for ENA SRD */
+	ENA_ADMIN_GET_STATS_TYPE_ENA_SRD            = 3,
+	ENA_ADMIN_GET_STATS_TYPE_CUSTOMER_METRICS   = 4,
+-
+ };
+
+ enum ena_admin_get_stats_scope {
+@@ -███,7 +███,7 @@ struct ena_admin_device_attr_feature_desc {
+	/* unicast MAC address (in Network byte order) */
+	u8 mac_addr[6];
+
+-	u8 reserved7[2];
++	u16 flow_steering_max_entries;
+
+	u32 max_mtu;
+ };
+@@ -███,6 +███,78 @@ struct ena_admin_feature_llq_desc {
+	struct ena_admin_accel_mode_req accel_mode;
+ };
+
++struct ena_admin_flow_steering_rule_params {
++	u8 dst_ip[16];
++
++	u8 dst_ip_mask[16];
++
++	u8 src_ip[16];
++
++	u8 src_ip_mask[16];
++
++	u16 dst_port;
++
++	u16 dst_port_mask;
++
++	u16 src_port;
++
++	u16 src_port_mask;
++
++	u8 tos;
++
++	u8 tos_mask;
++
++	/* Reserved */
++	u8 reserved1[54];
++};
++
++/* add new rule or remove existing one */
++enum ena_admin_flow_steering_action {
++	ENA_ADMIN_FLOW_STEERING_ADD_RULE            = 1,
++	ENA_ADMIN_FLOW_STEERING_REMOVE_RULE         = 2,
++	ENA_ADMIN_FLOW_STEERING_REMOVE_ALL_RULES    = 3,
++};
++
++/* type of traffic the rule applied on */
++enum ena_admin_flow_steering_type {
++	ENA_ADMIN_FLOW_INVALID                      = 0,
++	ENA_ADMIN_FLOW_IPV4                         = 1,
++	ENA_ADMIN_FLOW_IPV6                         = 2,
++	ENA_ADMIN_FLOW_IPV4_TCP                     = 3,
++	ENA_ADMIN_FLOW_IPV6_TCP                     = 4,
++	ENA_ADMIN_FLOW_IPV4_UDP                     = 5,
++	ENA_ADMIN_FLOW_IPV6_UDP                     = 6,
++	ENA_ADMIN_FLOW_LAST                         = 7,
++};
++
++struct ena_admin_set_feature_flow_steering_desc_req {
++	/* specific command action as defined in enum
++	 * ena_admin_flow_steering_action
++	 */
++	u8 action;
++
++	/* specific flow type as defined in enum ena_admin_flow_steering_type */
++	u8 flow_type;
++
++	u16 rx_q_idx;
++
++	/* if value is ENA_ADMIN_FLOW_STEERING_DEVICE_CHOOSE_LOCATION it means
++	 * the device should find unsued location for this rule
++	 */
++	u16 rule_location;
++
++	u16 reserved;
++
++	/* 31:0 : reserved */
++	u32 flags;
++};
++
++struct ena_admin_set_feature_flow_steering_desc_resp {
++	u16 rule_location;
++
++	u16 reserved;
++};
++
+ struct ena_admin_queue_ext_feature_fields {
+	u32 max_tx_sq_num;
+
+@@ -███,6 +███,9 @@ struct ena_admin_set_feat_cmd {
+
+		/* PHC configuration */
+		struct ena_admin_feature_phc_desc phc;
++
++		/* Flow steering configuration */
++		struct ena_admin_set_feature_flow_steering_desc_req flow_steering;
+	} u;
+ };
+
+@@ -███,6 +███,9 @@ struct ena_admin_set_feat_resp {
+
+	union {
+		u32 raw[14];
++
++		/* Flow steering configuration */
++		struct ena_admin_set_feature_flow_steering_desc_resp flow_steering;
+	} u;
+ };
+
+diff --git a/drivers/amazon/net/ena/ena_com.c b/drivers/amazon/net/ena/ena_com.c
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_com.c
++++ b/drivers/amazon/net/ena/ena_com.c
+@@ -███,6 +███,6 @@
+ // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #include "ena_com.h"
+@@ -███,7 +███,6 @@
+ #define ENA_ASYNC_QUEUE_DEPTH 16
+ #define ENA_ADMIN_QUEUE_DEPTH 32
+
+-
+ #define ENA_CTRL_MAJOR		0
+ #define ENA_CTRL_MINOR		0
+ #define ENA_CTRL_SUB_MINOR	1
+@@ -███,12 +███,12 @@ struct ena_com_stats_ctx {
+ };
+
+ static int ena_com_mem_addr_set(struct ena_com_dev *ena_dev,
+-				       struct ena_common_mem_addr *ena_addr,
+-				       dma_addr_t addr)
++				struct ena_common_mem_addr *ena_addr,
++				dma_addr_t addr)
+ {
+	if (unlikely((addr & GENMASK_ULL(ena_dev->dma_addr_bits - 1, 0)) != addr)) {
+		netdev_err(ena_dev->net_device,
+-			   "DMA address has more bits that the device supports\n");
++			   "DMA address has more bits than the device supports\n");
+		return -EINVAL;
+	}
+
+@@ -███,10 +███,10 @@ static int ena_com_admin_init_aenq(struct ena_com_dev *ena_dev,
+	writel(addr_high, ena_dev->reg_bar + ENA_REGS_AENQ_BASE_HI_OFF);
+
+	aenq_caps = 0;
+-	aenq_caps |= ena_dev->aenq.q_depth & ENA_REGS_AENQ_CAPS_AENQ_DEPTH_MASK;
+-	aenq_caps |=
+-		(sizeof(struct ena_admin_aenq_entry) << ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_SHIFT) &
+-		ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_MASK;
++	aenq_caps |= FIELD_PREP(ENA_REGS_AENQ_CAPS_AENQ_DEPTH_MASK, ena_dev->aenq.q_depth);
++
++	aenq_caps |= FIELD_PREP(ENA_REGS_AENQ_CAPS_AENQ_ENTRY_SIZE_MASK,
++				sizeof(struct ena_admin_aenq_entry));
+	writel(aenq_caps, ena_dev->reg_bar + ENA_REGS_AENQ_CAPS_OFF);
+
+	if (unlikely(!aenq_handlers)) {
+@@ -███,7 +███,7 @@ static int ena_com_admin_init_aenq(struct ena_com_dev *ena_dev,
+ }
+
+ static void comp_ctxt_release(struct ena_com_admin_queue *queue,
+-				     struct ena_comp_ctx *comp_ctx)
++			      struct ena_comp_ctx *comp_ctx)
+ {
+	comp_ctx->user_cqe = NULL;
+	comp_ctx->occupied = false;
+@@ -███,10 +███,8 @@ static u32 ena_com_reg_bar_read32(struct ena_com_dev *ena_dev, u16 offset)
+	mmio_read->seq_num++;
+
+	read_resp->req_id = mmio_read->seq_num + 0xDEAD;
+-	mmio_read_reg = (offset << ENA_REGS_MMIO_REG_READ_REG_OFF_SHIFT) &
+-			ENA_REGS_MMIO_REG_READ_REG_OFF_MASK;
+-	mmio_read_reg |= mmio_read->seq_num &
+-			ENA_REGS_MMIO_REG_READ_REQ_ID_MASK;
++	mmio_read_reg = FIELD_PREP(ENA_REGS_MMIO_REG_READ_REG_OFF_MASK, offset);
++	mmio_read_reg |= mmio_read->seq_num & ENA_REGS_MMIO_REG_READ_REQ_ID_MASK;
+
+	writel(mmio_read_reg, ena_dev->reg_bar + ENA_REGS_MMIO_REG_READ_OFF);
+
+@@ -███,9 +███,7 @@ static int ena_com_destroy_io_sq(struct ena_com_dev *ena_dev,
+	else
+		direction = ENA_ADMIN_SQ_DIRECTION_RX;
+
+-	destroy_cmd.sq.sq_identity |= (direction <<
+-		ENA_ADMIN_SQ_SQ_DIRECTION_SHIFT) &
+-		ENA_ADMIN_SQ_SQ_DIRECTION_MASK;
++	destroy_cmd.sq.sq_identity |= FIELD_PREP(ENA_ADMIN_SQ_SQ_DIRECTION_MASK, direction);
+
+	destroy_cmd.sq.sq_idx = io_sq->idx;
+	destroy_cmd.aq_common_descriptor.opcode = ENA_ADMIN_DESTROY_SQ;
+@@ -███,16 +███,14 @@ static int ena_com_create_io_sq(struct ena_com_dev *ena_dev,
+	else
+		direction = ENA_ADMIN_SQ_DIRECTION_RX;
+
+-	create_cmd.sq_identity |= (direction <<
+-		ENA_ADMIN_AQ_CREATE_SQ_CMD_SQ_DIRECTION_SHIFT) &
+-		ENA_ADMIN_AQ_CREATE_SQ_CMD_SQ_DIRECTION_MASK;
++	create_cmd.sq_identity |=
++		FIELD_PREP(ENA_ADMIN_AQ_CREATE_SQ_CMD_SQ_DIRECTION_MASK, direction);
+
+	create_cmd.sq_caps_2 |= io_sq->mem_queue_type &
+		ENA_ADMIN_AQ_CREATE_SQ_CMD_PLACEMENT_POLICY_MASK;
+
+-	create_cmd.sq_caps_2 |= (ENA_ADMIN_COMPLETION_POLICY_DESC <<
+-		ENA_ADMIN_AQ_CREATE_SQ_CMD_COMPLETION_POLICY_SHIFT) &
+-		ENA_ADMIN_AQ_CREATE_SQ_CMD_COMPLETION_POLICY_MASK;
++	create_cmd.sq_caps_2 |= FIELD_PREP(ENA_ADMIN_AQ_CREATE_SQ_CMD_COMPLETION_POLICY_MASK,
++					   ENA_ADMIN_COMPLETION_POLICY_DESC);
+
+	create_cmd.sq_caps_3 |=
+		ENA_ADMIN_AQ_CREATE_SQ_CMD_IS_PHYSICALLY_CONTIGUOUS_MASK;
+@@ -███,10 +███,7 @@ int ena_com_execute_admin_command(struct ena_com_admin_queue *admin_queue,
+					    comp, comp_size);
+	if (IS_ERR(comp_ctx)) {
+		ret = PTR_ERR(comp_ctx);
+-		if (ret == -ENODEV)
+-			netdev_dbg(admin_queue->ena_dev->net_device,
+-				   "Failed to submit command [%d]\n", ret);
+-		else
++		if (ret != -ENODEV)
+			netdev_err(admin_queue->ena_dev->net_device,
+				   "Failed to submit command [%d]\n", ret);
+
+@@ -███,10 +███,7 @@ int ena_com_execute_admin_command(struct ena_com_admin_queue *admin_queue,
+	if (unlikely(ret)) {
+		if (admin_queue->running_state)
+			netdev_err(admin_queue->ena_dev->net_device,
+-				   "Failed to process command. ret = %d\n", ret);
+-		else
+-			netdev_dbg(admin_queue->ena_dev->net_device,
+-				   "Failed to process command. ret = %d\n", ret);
++				   "Failed to process command [%d]\n", ret);
+	}
+	return ret;
+ }
+@@ -███,8 +███,7 @@ int ena_com_get_dma_width(struct ena_com_dev *ena_dev)
+		return -ETIME;
+	}
+
+-	width = (caps & ENA_REGS_CAPS_DMA_ADDR_WIDTH_MASK) >>
+-		ENA_REGS_CAPS_DMA_ADDR_WIDTH_SHIFT;
++	width = FIELD_GET(ENA_REGS_CAPS_DMA_ADDR_WIDTH_MASK, caps);
+
+	netdev_dbg(ena_dev->net_device, "ENA dma width: %d\n", width);
+
+@@ -███,17 +███,14 @@ int ena_com_validate_version(struct ena_com_dev *ena_dev)
+	}
+
+	dev_info(ena_dev->dmadev, "ENA device version: %d.%d\n",
+-		 (ver & ENA_REGS_VERSION_MAJOR_VERSION_MASK) >> ENA_REGS_VERSION_MAJOR_VERSION_SHIFT,
+-		 ver & ENA_REGS_VERSION_MINOR_VERSION_MASK);
++		 FIELD_GET(ENA_REGS_VERSION_MAJOR_VERSION_MASK, ver),
++		 FIELD_GET(ENA_REGS_VERSION_MINOR_VERSION_MASK, ver));
+
+	dev_info(ena_dev->dmadev, "ENA controller version: %d.%d.%d implementation version %d\n",
+-		 (ctrl_ver & ENA_REGS_CONTROLLER_VERSION_MAJOR_VERSION_MASK) >>
+-			 ENA_REGS_CONTROLLER_VERSION_MAJOR_VERSION_SHIFT,
+-		 (ctrl_ver & ENA_REGS_CONTROLLER_VERSION_MINOR_VERSION_MASK) >>
+-			 ENA_REGS_CONTROLLER_VERSION_MINOR_VERSION_SHIFT,
+-		 (ctrl_ver & ENA_REGS_CONTROLLER_VERSION_SUBMINOR_VERSION_MASK),
+-		 (ctrl_ver & ENA_REGS_CONTROLLER_VERSION_IMPL_ID_MASK) >>
+-			 ENA_REGS_CONTROLLER_VERSION_IMPL_ID_SHIFT);
++		 FIELD_GET(ENA_REGS_CONTROLLER_VERSION_MAJOR_VERSION_MASK, ctrl_ver),
++		 FIELD_GET(ENA_REGS_CONTROLLER_VERSION_MINOR_VERSION_MASK, ctrl_ver),
++		 FIELD_GET(ENA_REGS_CONTROLLER_VERSION_SUBMINOR_VERSION_MASK, ctrl_ver),
++		 FIELD_GET(ENA_REGS_CONTROLLER_VERSION_IMPL_ID_MASK, ctrl_ver));
+
+	ctrl_ver_masked =
+		(ctrl_ver & ENA_REGS_CONTROLLER_VERSION_MAJOR_VERSION_MASK) |
+@@ -███,7 +███,7 @@ int ena_com_phc_config(struct ena_com_dev *ena_dev)
+
+	/* Supporting only PHC V0 (readless mode with error bound) */
+	if (get_feat_resp.u.phc.version != ENA_ADMIN_PHC_FEATURE_VERSION_0) {
+-		netdev_err(ena_dev->net_device, "Unsupprted PHC version (0x%X), error: %d\n",
++		netdev_err(ena_dev->net_device, "Unsupported PHC version (0x%X), error: %d\n",
+			   get_feat_resp.u.phc.version, -EOPNOTSUPP);
+		return -EOPNOTSUPP;
+	}
+@@ -███,15 +███,14 @@ int ena_com_phc_get_timestamp(struct ena_com_dev *ena_dev, u64 *timestamp)
+
+		/* PHC is in active state, update statistics according to req_id and error_flags */
+		if ((READ_ONCE(read_resp->req_id) != phc->req_id) ||
+-		    (read_resp->error_flags & ENA_PHC_ERROR_FLAGS)) {
++		    (read_resp->error_flags & ENA_PHC_ERROR_FLAGS))
+			/* Device didn't update req_id during blocking time or timestamp is invalid,
+			 * this indicates on a device error
+			 */
+			phc->stats.phc_err++;
+-		} else {
++		else
+			/* Device updated req_id during blocking time with valid timestamp */
+			phc->stats.phc_exp++;
+-		}
+	}
+
+	/* Setting relative timeouts */
+@@ -███,16 +███,14 @@ int ena_com_admin_init(struct ena_com_dev *ena_dev,
+	writel(addr_high, ena_dev->reg_bar + ENA_REGS_ACQ_BASE_HI_OFF);
+
+	aq_caps = 0;
+-	aq_caps |= admin_queue->q_depth & ENA_REGS_AQ_CAPS_AQ_DEPTH_MASK;
+-	aq_caps |= (sizeof(struct ena_admin_aq_entry) <<
+-			ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_SHIFT) &
+-			ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_MASK;
++	aq_caps |= FIELD_PREP(ENA_REGS_AQ_CAPS_AQ_DEPTH_MASK, admin_queue->q_depth);
++	aq_caps |=
++		FIELD_PREP(ENA_REGS_AQ_CAPS_AQ_ENTRY_SIZE_MASK, sizeof(struct ena_admin_aq_entry));
+
+	acq_caps = 0;
+-	acq_caps |= admin_queue->q_depth & ENA_REGS_ACQ_CAPS_ACQ_DEPTH_MASK;
+-	acq_caps |= (sizeof(struct ena_admin_acq_entry) <<
+-		ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_SHIFT) &
+-		ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_MASK;
++	acq_caps |= FIELD_PREP(ENA_REGS_ACQ_CAPS_ACQ_DEPTH_MASK, admin_queue->q_depth);
++	acq_caps |= FIELD_PREP(ENA_REGS_ACQ_CAPS_ACQ_ENTRY_SIZE_MASK,
++			       sizeof(struct ena_admin_acq_entry));
+
+	writel(aq_caps, ena_dev->reg_bar + ENA_REGS_AQ_CAPS_OFF);
+	writel(acq_caps, ena_dev->reg_bar + ENA_REGS_ACQ_CAPS_OFF);
+@@ -███,7 +███,6 @@ void ena_com_aenq_intr_handler(struct ena_com_dev *ena_dev, void *data)
+	struct ena_admin_aenq_entry *aenq_e;
+	struct ena_admin_aenq_common_desc *aenq_common;
+	struct ena_com_aenq *aenq  = &ena_dev->aenq;
+-	u64 timestamp;
+	ena_aenq_handler handler_cb;
+	u16 masked_head, processed = 0;
+	u8 phase;
+@@ -███,11 +███,10 @@ void ena_com_aenq_intr_handler(struct ena_com_dev *ena_dev, void *data)
+		 */
+		dma_rmb();
+
+-		timestamp = (u64)aenq_common->timestamp_low |
+-			((u64)aenq_common->timestamp_high << 32);
+-
+		netdev_dbg(ena_dev->net_device, "AENQ! Group[%x] Syndrome[%x] timestamp: [%llus]\n",
+-			   aenq_common->group, aenq_common->syndrome, timestamp);
++			   aenq_common->group, aenq_common->syndrome,
++			   ((u64)aenq_common->timestamp_low |
++			    ((u64)aenq_common->timestamp_high << 32)));
+
+		/* Handle specific event*/
+		handler_cb = ena_com_get_specific_aenq_cb(ena_dev,
+@@ -███,8 +███,7 @@ int ena_com_dev_reset(struct ena_com_dev *ena_dev,
+		return -EINVAL;
+	}
+
+-	timeout = (cap & ENA_REGS_CAPS_RESET_TIMEOUT_MASK) >>
+-			ENA_REGS_CAPS_RESET_TIMEOUT_SHIFT;
++	timeout = FIELD_GET(ENA_REGS_CAPS_RESET_TIMEOUT_MASK, cap);
+	if (timeout == 0) {
+		netdev_err(ena_dev->net_device, "Invalid timeout value\n");
+		return -EINVAL;
+@@ -███,11 +███,9 @@ int ena_com_dev_reset(struct ena_com_dev *ena_dev,
+	/* For backward compatibility, device will interpret
+	 * bits 24-27 as MSB, bits 28-31 as LSB
+	 */
+-	reset_reason_lsb = ENA_FIELD_GET(reset_reason, ENA_RESET_REASON_LSB_MASK,
+-					 ENA_RESET_REASON_LSB_OFFSET);
++	reset_reason_lsb = FIELD_GET(ENA_RESET_REASON_LSB_MASK, reset_reason);
+
+-	reset_reason_msb = ENA_FIELD_GET(reset_reason, ENA_RESET_REASON_MSB_MASK,
+-					 ENA_RESET_REASON_MSB_OFFSET);
++	reset_reason_msb = FIELD_GET(ENA_RESET_REASON_MSB_MASK, reset_reason);
+
+	reset_val |= reset_reason_lsb << ENA_REGS_DEV_CTL_RESET_REASON_SHIFT;
+
+@@ -███,8 +███,7 @@ int ena_com_dev_reset(struct ena_com_dev *ena_dev,
+		 * extended reset reason fallback to generic
+		 */
+		reset_val = ENA_REGS_DEV_CTL_DEV_RESET_MASK;
+-		reset_val |= (ENA_REGS_RESET_GENERIC << ENA_REGS_DEV_CTL_RESET_REASON_SHIFT) &
+-			      ENA_REGS_DEV_CTL_RESET_REASON_MASK;
++		reset_val |= FIELD_PREP(ENA_REGS_DEV_CTL_RESET_REASON_MASK, ENA_REGS_RESET_GENERIC);
+	}
+	writel(reset_val, ena_dev->reg_bar + ENA_REGS_DEV_CTL_OFF);
+
+@@ -███,8 +███,7 @@ int ena_com_dev_reset(struct ena_com_dev *ena_dev,
+		return rc;
+	}
+
+-	timeout = (cap & ENA_REGS_CAPS_ADMIN_CMD_TO_MASK) >>
+-		ENA_REGS_CAPS_ADMIN_CMD_TO_SHIFT;
++	timeout = FIELD_GET(ENA_REGS_CAPS_ADMIN_CMD_TO_MASK, cap);
+	if (timeout)
+		/* the resolution of timeout reg is 100ms */
+		ena_dev->admin_queue.completion_timeout = timeout * 100000;
+@@ -███,7 +███,7 @@ int ena_com_get_eni_stats(struct ena_com_dev *ena_dev,
+ }
+
+ int ena_com_get_ena_srd_info(struct ena_com_dev *ena_dev,
+-			      struct ena_admin_ena_srd_info *info)
++			     struct ena_admin_ena_srd_info *info)
+ {
+	struct ena_com_stats_ctx ctx;
+	int ret;
+@@ -███,8 +███,8 @@ int ena_com_get_customer_metrics(struct ena_com_dev *ena_dev, char *buffer, u32
+	get_cmd = &ctx.get_cmd;
+	memset(&ctx, 0x0, sizeof(ctx));
+	ret = ena_com_mem_addr_set(ena_dev,
+-		&get_cmd->u.control_buffer.address,
+-		ena_dev->customer_metrics.buffer_dma_addr);
++				   &get_cmd->u.control_buffer.address,
++				   ena_dev->customer_metrics.buffer_dma_addr);
+	if (unlikely(ret)) {
+		netdev_err(ena_dev->net_device, "Memory address set failed.\n");
+		return ret;
+@@ -███,6 +███,59 @@ void ena_com_rss_destroy(struct ena_com_dev *ena_dev)
+	memset(&ena_dev->rss, 0x0, sizeof(ena_dev->rss));
+ }
+
++int ena_com_flow_steering_init(struct ena_com_dev *ena_dev, u16 flow_steering_entries)
++{
++	u32 tbl_size_in_bytes =
++		flow_steering_entries * sizeof(struct ena_com_flow_steering_table_entry);
++	struct ena_com_flow_steering *flow_steering = &ena_dev->flow_steering;
++
++	memset(flow_steering, 0x0, sizeof(*flow_steering));
++
++	if (!(ena_dev->supported_features & BIT(ENA_ADMIN_FLOW_STEERING_CONFIG)))
++		return -EOPNOTSUPP;
++
++	flow_steering->tbl_size = flow_steering_entries;
++
++	flow_steering->flow_steering_tbl =
++		devm_kzalloc(ena_dev->dmadev, tbl_size_in_bytes, GFP_KERNEL);
++	if (unlikely(!flow_steering->flow_steering_tbl)) {
++		netdev_err(ena_dev->net_device, "Flow steering table memory allocation failed\n");
++		return -ENOMEM;
++	}
++
++	flow_steering->requested_rule =
++		dma_zalloc_coherent(ena_dev->dmadev,
++				    sizeof(struct ena_admin_flow_steering_rule_params),
++				    &flow_steering->requested_rule_dma_addr, GFP_KERNEL);
++	if (unlikely(!flow_steering->requested_rule)) {
++		netdev_err(ena_dev->net_device,
++			   "Flow steering dma-able params memory allocation failed\n");
++		goto err;
++	}
++
++	return 0;
++err:
++	ena_com_flow_steering_destroy(ena_dev);
++
++	return -ENOMEM;
++}
++
++void ena_com_flow_steering_destroy(struct ena_com_dev *ena_dev)
++{
++	struct ena_com_flow_steering *flow_steering = &ena_dev->flow_steering;
++
++	if (flow_steering->requested_rule) {
++		dma_free_coherent(ena_dev->dmadev,
++				  sizeof(struct ena_admin_flow_steering_rule_params),
++				  flow_steering->requested_rule,
++				  flow_steering->requested_rule_dma_addr);
++	}
++
++	if (flow_steering->flow_steering_tbl) {
++		devm_kfree(ena_dev->dmadev, flow_steering->flow_steering_tbl);
++	}
++}
++
+ int ena_com_allocate_host_info(struct ena_com_dev *ena_dev)
+ {
+	struct ena_host_attribute *host_attr = &ena_dev->host_attr;
+@@ -███,11 +███,14 @@ int ena_com_allocate_customer_metrics_buffer(struct ena_com_dev *ena_dev)
+	struct ena_customer_metrics *customer_metrics = &ena_dev->customer_metrics;
+
+	customer_metrics->buffer_len = ENA_CUSTOMER_METRICS_BUFFER_SIZE;
++
+	customer_metrics->buffer_virt_addr =
+		dma_zalloc_coherent(ena_dev->dmadev, customer_metrics->buffer_len,
+				    &customer_metrics->buffer_dma_addr, GFP_KERNEL);
+-	if (unlikely(!customer_metrics->buffer_virt_addr))
++	if (unlikely(!customer_metrics->buffer_virt_addr)) {
++		customer_metrics->buffer_len = 0;
+		return -ENOMEM;
++	}
+
+	return 0;
+ }
+@@ -███,6 +███,7 @@ void ena_com_delete_customer_metrics_buffer(struct ena_com_dev *ena_dev)
+				  customer_metrics->buffer_virt_addr,
+				  customer_metrics->buffer_dma_addr);
+		customer_metrics->buffer_virt_addr = NULL;
++		customer_metrics->buffer_len = 0;
+	}
+ }
+
+@@ -███,3 +███,256 @@ int ena_com_config_dev_mode(struct ena_com_dev *ena_dev,
+
+	return 0;
+ }
++
++int ena_com_flow_steering_add_rule(struct ena_com_dev *ena_dev,
++				   struct ena_com_flow_steering_rule_params *configure_params,
++				   u16 *rule_idx)
++{
++	struct ena_com_flow_steering *flow_steering = &ena_dev->flow_steering;
++	struct ena_com_admin_queue *admin_queue;
++	struct ena_admin_set_feat_resp resp;
++	struct ena_admin_set_feat_cmd cmd;
++	int ret;
++
++	if (!(ena_dev->supported_features & BIT(ENA_ADMIN_FLOW_STEERING_CONFIG))) {
++		netdev_err(ena_dev->net_device,
++			   "Flow steering rules are not supported by this device\n");
++		return -EOPNOTSUPP;
++	}
++
++	if ((*rule_idx >= flow_steering->tbl_size) &&
++	    (*rule_idx != ENA_ADMIN_FLOW_STEERING_DEVICE_CHOOSE_LOCATION)) {
++		netdev_err(ena_dev->net_device,
++			   "Failed to add a flow steering rule, index %u out of bounds\n",
++			   *rule_idx);
++		return -EINVAL;
++	}
++
++	if ((*rule_idx != ENA_ADMIN_FLOW_STEERING_DEVICE_CHOOSE_LOCATION) &&
++	    (flow_steering->flow_steering_tbl[*rule_idx].in_use)) {
++		netdev_err(ena_dev->net_device,
++			   "Failed to configure Flow steering rule to index %u with currently active rule in it\n",
++			   *rule_idx);
++		return -EINVAL;
++	}
++
++	memset(&cmd, 0x0, sizeof(cmd));
++	admin_queue = &ena_dev->admin_queue;
++
++	cmd.aq_common_descriptor.opcode = ENA_ADMIN_SET_FEATURE;
++	cmd.aq_common_descriptor.flags =
++			ENA_ADMIN_AQ_COMMON_DESC_CTRL_DATA_INDIRECT_MASK;
++	cmd.feat_common.feature_id = ENA_ADMIN_FLOW_STEERING_CONFIG;
++	cmd.u.flow_steering.action = ENA_ADMIN_FLOW_STEERING_ADD_RULE;
++	cmd.u.flow_steering.flow_type = configure_params->flow_type;
++	cmd.u.flow_steering.rx_q_idx = configure_params->qid;
++	cmd.u.flow_steering.rule_location = *rule_idx;
++	cmd.u.flow_steering.flags = 0;
++
++	memcpy(flow_steering->requested_rule,
++	       &configure_params->flow_params,
++	       sizeof(struct ena_admin_flow_steering_rule_params));
++
++	ret = ena_com_mem_addr_set(ena_dev,
++				   &cmd.control_buffer.address,
++				   flow_steering->requested_rule_dma_addr);
++	if (unlikely(ret)) {
++		netdev_err(ena_dev->net_device, "Memory address set failed\n");
++		return ret;
++	}
++
++	cmd.control_buffer.length = sizeof(struct ena_admin_flow_steering_rule_params);
++
++	ret = ena_com_execute_admin_command(admin_queue,
++					    (struct ena_admin_aq_entry *)&cmd,
++					    sizeof(cmd),
++					    (struct ena_admin_acq_entry *)&resp,
++					    sizeof(resp));
++	if (unlikely(ret)) {
++		netdev_err(ena_dev->net_device, "Failed to add a new flow steering rule: %d\n", ret);
++		return ret;
++	}
++
++	/* If the rule index needs to be chosen by the device,
++	 * set it to the rule_idx from the response
++	 */
++	if (*rule_idx == ENA_ADMIN_FLOW_STEERING_DEVICE_CHOOSE_LOCATION) {
++		*rule_idx = resp.u.flow_steering.rule_location;
++		if (*rule_idx >= flow_steering->tbl_size) {
++			netdev_err(ena_dev->net_device,
++				   "Flow steering rule configured to invalid index: %d\n",
++				   *rule_idx);
++			return -EFAULT;
++		}
++	}
++
++	flow_steering->flow_steering_tbl[*rule_idx].rule_params = *configure_params;
++	flow_steering->flow_steering_tbl[*rule_idx].in_use = true;
++
++	flow_steering->active_rules_cnt++;
++
++	return 0;
++}
++
++int ena_com_flow_steering_remove_rule(struct ena_com_dev *ena_dev, u16 rule_idx)
++{
++	struct ena_com_flow_steering *flow_steering = &ena_dev->flow_steering;
++	struct ena_admin_set_feat_resp resp;
++	struct ena_admin_set_feat_cmd cmd;
++	int ret;
++
++	if (!(ena_dev->supported_features & BIT(ENA_ADMIN_FLOW_STEERING_CONFIG))) {
++		netdev_err(ena_dev->net_device,
++			   "Flow steering rules are not supported by this device\n");
++		return -EOPNOTSUPP;
++	}
++
++	if (rule_idx >= flow_steering->tbl_size) {
++		netdev_err(ena_dev->net_device,
++			   "Failed to remove a flow steering rule, index %u out of bounds\n",
++			   rule_idx);
++		return -EINVAL;
++	}
++
++	if (!flow_steering->flow_steering_tbl[rule_idx].in_use) {
++		netdev_err(ena_dev->net_device,
++			   "Failed to remove a flow steering rule, no rule configured in index %u\n",
++			   rule_idx);
++		return -EINVAL;
++	}
++
++	memset(&cmd, 0x0, sizeof(cmd));
++
++	cmd.aq_common_descriptor.opcode = ENA_ADMIN_SET_FEATURE;
++	cmd.feat_common.feature_id = ENA_ADMIN_FLOW_STEERING_CONFIG;
++	cmd.u.flow_steering.action = ENA_ADMIN_FLOW_STEERING_REMOVE_RULE;
++	cmd.u.flow_steering.rule_location = rule_idx;
++
++	ret = ena_com_execute_admin_command(&ena_dev->admin_queue,
++					    (struct ena_admin_aq_entry *)&cmd,
++					    sizeof(cmd),
++					    (struct ena_admin_acq_entry *)&resp,
++					    sizeof(resp));
++	if (unlikely(ret)) {
++		netdev_err(ena_dev->net_device, "Failed to remove a flow steering rule: %d\n", ret);
++		return ret;
++	}
++
++	memset(&flow_steering->flow_steering_tbl[rule_idx].rule_params, 0,
++	       sizeof(struct ena_admin_flow_steering_rule_params));
++	flow_steering->flow_steering_tbl[rule_idx].in_use = false;
++
++	flow_steering->active_rules_cnt--;
++
++	return 0;
++}
++
++int ena_com_flow_steering_remove_all_rules(struct ena_com_dev *ena_dev)
++{
++	struct ena_com_flow_steering *flow_steering = &ena_dev->flow_steering;
++	struct ena_admin_set_feat_resp resp;
++	struct ena_admin_set_feat_cmd cmd;
++	int ret;
++
++	if (!(ena_dev->supported_features & BIT(ENA_ADMIN_FLOW_STEERING_CONFIG))) {
++		netdev_err(ena_dev->net_device,
++			   "Flow steering rules are not supported by this device\n");
++		return -EOPNOTSUPP;
++	}
++
++	memset(&cmd, 0x0, sizeof(cmd));
++
++	cmd.aq_common_descriptor.opcode = ENA_ADMIN_SET_FEATURE;
++	cmd.feat_common.feature_id = ENA_ADMIN_FLOW_STEERING_CONFIG;
++	cmd.u.flow_steering.action = ENA_ADMIN_FLOW_STEERING_REMOVE_ALL_RULES;
++
++	ret = ena_com_execute_admin_command(&ena_dev->admin_queue,
++					    (struct ena_admin_aq_entry *)&cmd,
++					    sizeof(cmd),
++					    (struct ena_admin_acq_entry *)&resp,
++					    sizeof(resp));
++	if (unlikely(ret)) {
++		netdev_err(ena_dev->net_device, "Failed to remove all flow steering rules: %d\n",
++			   ret);
++		return ret;
++	}
++
++	memset(flow_steering->flow_steering_tbl, 0,
++	       flow_steering->tbl_size * sizeof(struct ena_com_flow_steering_table_entry));
++	flow_steering->active_rules_cnt = 0;
++
++	return 0;
++}
++
++int ena_com_flow_steering_get_rule(struct ena_com_dev *ena_dev,
++				   struct ena_com_flow_steering_rule_params *configure_params,
++				   u16 rule_idx)
++{
++	struct ena_com_flow_steering *flow_steering = &ena_dev->flow_steering;
++	struct ena_com_flow_steering_table_entry *entry;
++
++	if (!(ena_dev->supported_features & BIT(ENA_ADMIN_FLOW_STEERING_CONFIG))) {
++		netdev_err(ena_dev->net_device,
++			   "Flow steering rules are not supported by this device\n");
++		return -EOPNOTSUPP;
++	}
++
++	if (rule_idx >= flow_steering->tbl_size) {
++		netdev_err(ena_dev->net_device,
++			   "Failed to get a flow steering rule, index %u out bounds\n", rule_idx);
++		return -EINVAL;
++	}
++
++	entry = &flow_steering->flow_steering_tbl[rule_idx];
++
++	if (!entry->in_use) {
++		netdev_err(ena_dev->net_device,
++			   "Failed to get a flow steering rule in index %u, entry not in use\n",
++			   rule_idx);
++		return -EINVAL;
++	}
++
++	*configure_params = entry->rule_params;
++
++	return 0;
++}
++
++int ena_com_flow_steering_restore_device_rules(struct ena_com_dev *ena_dev)
++{
++	struct ena_com_flow_steering *flow_steering = &ena_dev->flow_steering;
++	struct ena_com_flow_steering_table_entry *rule_entry;
++	u16 rule_idx;
++	int ret;
++
++	if (!(ena_dev->supported_features & BIT(ENA_ADMIN_FLOW_STEERING_CONFIG)))
++		return -EOPNOTSUPP;
++
++	/* no rules to restore */
++	if (flow_steering->active_rules_cnt == 0)
++		return 0;
++
++	/* set the amount of active rules to zero, will count them again while restoring */
++	flow_steering->active_rules_cnt = 0;
++
++	for (rule_idx = 0; rule_idx < flow_steering->tbl_size; rule_idx++) {
++		rule_entry = &flow_steering->flow_steering_tbl[rule_idx];
++
++		if (rule_entry->in_use) {
++			/* mark the entry as not in use before attempt to reconfigure it
++			 * so it will be counted as new rule
++			 */
++			rule_entry->in_use = false;
++
++			ret = ena_com_flow_steering_add_rule(ena_dev, &rule_entry->rule_params,
++							     &rule_idx);
++			if (unlikely(ret)) {
++				netdev_err(ena_dev->net_device,
++					   "Failed to restore flow steering rule in index %d\n",
++					   rule_idx);
++				return -EFAULT;
++			}
++		}
++	}
++
++	return 0;
++}
+diff --git a/drivers/amazon/net/ena/ena_com.h b/drivers/amazon/net/ena/ena_com.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_com.h
++++ b/drivers/amazon/net/ena/ena_com.h
+@@ -███,6 +███,6 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #ifndef ENA_COM
+@@ -███,7 +███,6 @@ struct ena_com_io_cq {
+	/* Interrupt unmask register */
+	u32 __iomem *unmask_reg;
+
+-
+	/* numa configuration register (for TPH) */
+	u32 __iomem *numa_node_cfg_reg;
+
+@@ -███,6 +███,27 @@ struct ena_host_attribute {
+	dma_addr_t host_info_dma_addr;
+ };
+
++struct ena_com_flow_steering_rule_params {
++	struct ena_admin_flow_steering_rule_params flow_params;
++	u16 qid;
++	/* Specific flow type as defined in enum ena_admin_flow_steering_type */
++	u8 flow_type;
++};
++
++struct ena_com_flow_steering_table_entry {
++	struct ena_com_flow_steering_rule_params rule_params;
++	bool in_use;
++};
++
++struct ena_com_flow_steering {
++	struct ena_com_flow_steering_table_entry *flow_steering_tbl;
++	u16 tbl_size;
++	u16 active_rules_cnt;
++
++	struct ena_admin_flow_steering_rule_params *requested_rule;
++	dma_addr_t requested_rule_dma_addr;
++};
++
+ /* Each ena_dev is a PCI function. */
+ struct ena_com_dev {
+	struct ena_com_admin_queue admin_queue;
+@@ -███,6 +███,8 @@ struct ena_com_dev {
+	struct ena_com_llq_info llq_info;
+
+	struct ena_customer_metrics customer_metrics;
++
++	struct ena_com_flow_steering flow_steering;
+ };
+
+ struct ena_com_dev_get_features_ctx {
+@@ -███,6 +███,23 @@ int ena_com_rss_init(struct ena_com_dev *ena_dev, u16 log_size);
+  */
+ void ena_com_rss_destroy(struct ena_com_dev *ena_dev);
+
++/* ena_com_flow_steering_init - Init Flow steering
++ * @ena_dev: ENA communication layer struct
++ * @flow_steering_entries: Number of Flow steering entries to use.
++ *
++ * Allocate the table to hold the steering rules context.
++ *
++ * @return: 0 on success and negative value otherwise.
++ */
++int ena_com_flow_steering_init(struct ena_com_dev *ena_dev, u16 flow_steering_entries);
++
++/* ena_com_flow_steering_destroy - Destroy flow steering
++ * @ena_dev: ENA communication layer struct
++ *
++ * Free the flow steering allocated resources.
++ */
++void ena_com_flow_steering_destroy(struct ena_com_dev *ena_dev);
++
+ /* ena_com_get_current_hash_function - Get RSS hash function
+  * @ena_dev: ENA communication layer struct
+  *
+@@ -███,6 +███,50 @@ static inline bool ena_com_get_missing_admin_interrupt(struct ena_com_dev *ena_d
+	return ena_dev->admin_queue.is_missing_admin_interrupt;
+ }
+
++/* ena_com_flow_steering_add_rule - configure new Rx flow steering rule
++ * @ena_dev: ENA communication layer struct
++ * @configure_params: Steering rule params, including queue and flow type.
++ * @rule_idx: Index in rules table to configure the rule into, on return
++ * it will hold the actual index of the configured rule.
++ *
++ * @return - 0 on success, negative value on failure.
++ */
++int ena_com_flow_steering_add_rule(struct ena_com_dev *ena_dev,
++				   struct ena_com_flow_steering_rule_params *configure_params,
++				   u16 *rule_idx);
++
++/* ena_com_flow_steering_remove_rule - Remove an existing RX flow steering rule
++ * @ena_dev: ENA communication layer struct
++ * @rule_idx: Rule table index to delete
++ *
++ * @return - 0 on success, negative value on failure.
++ */
++int ena_com_flow_steering_remove_rule(struct ena_com_dev *ena_dev, u16 rule_idx);
++
++/* ena_com_flow_steering_remove_all_rules - Remove all flow steering rules
++ * @ena_dev: ENA communication layer struct
++ *
++ * @return - 0 on success, negative value on failure.
++ */
++int ena_com_flow_steering_remove_all_rules(struct ena_com_dev *ena_dev);
++
++/* ena_com_flow_steering_get_rule - retrieve info about specific steering rule
++ * @ena_dev: ENA communication layer struct
++ * @configure_params: pointer to be filled with the steering rule parmeters.
++ * @rule_idx: Rule index to get info about.
++ *
++ * @return - 0 on success, negative value on failure.
++ */
++int ena_com_flow_steering_get_rule(struct ena_com_dev *ena_dev,
++				   struct ena_com_flow_steering_rule_params *configure_params,
++				   u16 rule_idx);
++
++/* ena_com_flow_steering_restore_device_rules - reconfigure the existing rules to the device
++ * after resets caused by errors
++ * @ena_dev: ENA communication layer struct
++ */
++int ena_com_flow_steering_restore_device_rules(struct ena_com_dev *ena_dev);
++
+ /* ena_com_io_sq_to_ena_dev - Extract ena_com_dev using contained field io_sq.
+  * @io_sq: IO submit queue struct
+  *
+@@ -███,15 +███,13 @@ static inline void ena_com_update_intr_reg(struct ena_eth_io_intr_reg *intr_reg,
+		ENA_ETH_IO_INTR_REG_RX_INTR_DELAY_MASK;
+
+	intr_reg->intr_control |=
+-		(tx_delay_interval << ENA_ETH_IO_INTR_REG_TX_INTR_DELAY_SHIFT)
+-		& ENA_ETH_IO_INTR_REG_TX_INTR_DELAY_MASK;
++		FIELD_PREP(ENA_ETH_IO_INTR_REG_TX_INTR_DELAY_MASK, tx_delay_interval);
+
+	if (unmask)
+		intr_reg->intr_control |= ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK;
+
+-	intr_reg->intr_control |=
+-		(((u32)no_moderation_update) << ENA_ETH_IO_INTR_REG_NO_MODERATION_UPDATE_SHIFT) &
+-			ENA_ETH_IO_INTR_REG_NO_MODERATION_UPDATE_MASK;
++	intr_reg->intr_control |= FIELD_PREP(ENA_ETH_IO_INTR_REG_NO_MODERATION_UPDATE_MASK,
++					     ((u32)no_moderation_update));
+ }
+
+ static inline u8 *ena_com_get_next_bounce_buffer(struct ena_com_io_bounce_buffer_control *bounce_buf_ctrl)
+diff --git a/drivers/amazon/net/ena/ena_common_defs.h b/drivers/amazon/net/ena/ena_common_defs.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_common_defs.h
++++ b/drivers/amazon/net/ena/ena_common_defs.h
+@@ -███,7 +███,8 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
++
+ #ifndef _ENA_COMMON_H_
+ #define _ENA_COMMON_H_
+
+diff --git a/drivers/amazon/net/ena/ena_eth_com.c b/drivers/amazon/net/ena/ena_eth_com.c
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_eth_com.c
++++ b/drivers/amazon/net/ena/ena_eth_com.c
+@@ -███,11 +███,11 @@
+ // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #include "ena_eth_com.h"
+
+-static struct ena_eth_io_rx_cdesc_base *ena_com_get_next_rx_cdesc(
++struct ena_eth_io_rx_cdesc_base *ena_com_get_next_rx_cdesc(
+	struct ena_com_io_cq *io_cq)
+ {
+	struct ena_eth_io_rx_cdesc_base *cdesc;
+@@ -███,8 +███,7 @@ static struct ena_eth_io_rx_cdesc_base *ena_com_get_next_rx_cdesc(
+	cdesc = (struct ena_eth_io_rx_cdesc_base *)(io_cq->cdesc_addr.virt_addr
+			+ (head_masked * io_cq->cdesc_entry_size_in_bytes));
+
+-	desc_phase = (READ_ONCE(cdesc->status) & ENA_ETH_IO_RX_CDESC_BASE_PHASE_MASK) >>
+-		     ENA_ETH_IO_RX_CDESC_BASE_PHASE_SHIFT;
++	desc_phase = FIELD_GET(ENA_ETH_IO_RX_CDESC_BASE_PHASE_MASK, READ_ONCE(cdesc->status));
+
+	if (desc_phase != expected_phase)
+		return NULL;
+@@ -███,6 +███,46 @@ static struct ena_eth_io_rx_cdesc_base *ena_com_get_next_rx_cdesc(
+	return cdesc;
+ }
+
++void ena_com_dump_single_rx_cdesc(struct ena_com_io_cq *io_cq,
++				  struct ena_eth_io_rx_cdesc_base *desc)
++{
++	if (desc) {
++		u32 *desc_arr = (u32 *)desc;
++
++		netdev_err(ena_com_io_cq_to_ena_dev(io_cq)->net_device,
++			   "RX descriptor value[0x%08x 0x%08x 0x%08x 0x%08x] phase[%u] first[%u] last[%u] MBZ7[%u] MZB17[%u]\n",
++			   desc_arr[0], desc_arr[1], desc_arr[2], desc_arr[3],
++			   FIELD_GET((u32)ENA_ETH_IO_RX_DESC_PHASE_MASK, desc->status),
++			   FIELD_GET((u32)ENA_ETH_IO_RX_DESC_FIRST_MASK, desc->status),
++			   FIELD_GET((u32)ENA_ETH_IO_RX_DESC_LAST_MASK, desc->status),
++			   FIELD_GET((u32)ENA_ETH_IO_RX_CDESC_BASE_MBZ7_MASK, desc->status),
++			   FIELD_GET((u32)ENA_ETH_IO_RX_CDESC_BASE_MBZ17_MASK, desc->status));
++	}
++}
++
++void ena_com_dump_single_tx_cdesc(struct ena_com_io_cq *io_cq,
++				  struct ena_eth_io_tx_cdesc *desc)
++{
++	if (desc) {
++		u32 *desc_arr = (u32 *)desc;
++
++		netdev_err(ena_com_io_cq_to_ena_dev(io_cq)->net_device,
++			   "TX descriptor value[0x%08x 0x%08x] phase[%u] MBZ6[%u]\n", desc_arr[0],
++			   desc_arr[1], FIELD_GET((u32)ENA_ETH_IO_TX_CDESC_PHASE_MASK, desc->flags),
++			   FIELD_GET((u32)ENA_ETH_IO_TX_CDESC_MBZ6_MASK, desc->flags));
++	}
++}
++
++struct ena_eth_io_tx_cdesc *ena_com_tx_cdesc_idx_to_ptr(
++	struct ena_com_io_cq *io_cq, u16 idx)
++{
++	idx &= (io_cq->q_depth - 1);
++
++	return (struct ena_eth_io_tx_cdesc *)
++		((uintptr_t)io_cq->cdesc_addr.virt_addr +
++		idx * io_cq->cdesc_entry_size_in_bytes);
++}
++
+ static void *get_sq_desc_regular_queue(struct ena_com_io_sq *io_sq)
+ {
+	u16 tail_masked;
+@@ -███,7 +███,7 @@ static void *get_sq_desc_regular_queue(struct ena_com_io_sq *io_sq)
+ }
+
+ static int ena_com_write_bounce_buffer_to_dev(struct ena_com_io_sq *io_sq,
+-						     u8 *bounce_buffer)
++					      u8 *bounce_buffer)
+ {
+	struct ena_com_llq_info *llq_info = &io_sq->llq_info;
+
+@@ -███,7 +███,7 @@ static int ena_com_write_bounce_buffer_to_dev(struct ena_com_io_sq *io_sq,
+
+		io_sq->entries_in_tx_burst_left--;
+		netdev_dbg(ena_com_io_sq_to_ena_dev(io_sq)->net_device,
+-			   "Decreasing entries_in_tx_burst_left of queue %d to %d\n", io_sq->qid,
++			   "Decreasing entries_in_tx_burst_left of queue %u to %u\n", io_sq->qid,
+			   io_sq->entries_in_tx_burst_left);
+	}
+
+@@ -███,8 +███,8 @@ static int ena_com_write_bounce_buffer_to_dev(struct ena_com_io_sq *io_sq,
+ }
+
+ static int ena_com_write_header_to_bounce(struct ena_com_io_sq *io_sq,
+-						 u8 *header_src,
+-						 u16 header_len)
++					  u8 *header_src,
++					  u16 header_len)
+ {
+	struct ena_com_llq_pkt_ctrl *pkt_ctrl = &io_sq->llq_buf_ctrl;
+	struct ena_com_llq_info *llq_info = &io_sq->llq_info;
+@@ -███,7 +███,7 @@ static int ena_com_sq_update_tail(struct ena_com_io_sq *io_sq)
+	return ena_com_sq_update_reqular_queue_tail(io_sq);
+ }
+
+-static struct ena_eth_io_rx_cdesc_base *
++struct ena_eth_io_rx_cdesc_base *
+	ena_com_rx_cdesc_idx_to_ptr(struct ena_com_io_cq *io_cq, u16 idx)
+ {
+	idx &= (io_cq->q_depth - 1);
+@@ -███,12 +███,9 @@ static int ena_com_cdesc_rx_pkt_get(struct ena_com_io_cq *io_cq,
+			break;
+		status = READ_ONCE(cdesc->status);
+
+-		ena_com_cq_inc_head(io_cq);
+-		if (unlikely((status & ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK) >>
+-				     ENA_ETH_IO_RX_CDESC_BASE_FIRST_SHIFT &&
+-			     count != 0)) {
++		if (unlikely(FIELD_GET(ENA_ETH_IO_RX_CDESC_BASE_FIRST_MASK, status) && count != 0)) {
+			netdev_err(dev->net_device,
+-				   "First bit is on in descriptor #%d on q_id: %d, req_id: %u\n",
++				   "First bit is on in descriptor #%u on q_id: %u, req_id: %u\n",
+				   count, io_cq->qid, cdesc->req_id);
+			return -EFAULT;
+		}
+@@ -███,14 +███,14 @@ static int ena_com_cdesc_rx_pkt_get(struct ena_com_io_cq *io_cq,
+					ENA_ETH_IO_RX_CDESC_BASE_MBZ17_MASK)) &&
+			     ena_com_get_cap(dev, ENA_ADMIN_CDESC_MBZ))) {
+			netdev_err(dev->net_device,
+-				   "Corrupted RX descriptor #%d on q_id: %d, req_id: %u\n", count,
++				   "Corrupted RX descriptor #%u on q_id: %u, req_id: %u\n", count,
+				   io_cq->qid, cdesc->req_id);
+			return -EFAULT;
+		}
+
++		ena_com_cq_inc_head(io_cq);
+		count++;
+-		last = (status & ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK) >>
+-			ENA_ETH_IO_RX_CDESC_BASE_LAST_SHIFT;
++		last = FIELD_GET(ENA_ETH_IO_RX_CDESC_BASE_LAST_MASK, status);
+	} while (!last);
+
+	if (last) {
+@@ -███,7 +███,7 @@ static int ena_com_cdesc_rx_pkt_get(struct ena_com_io_cq *io_cq,
+		io_cq->cur_rx_pkt_cdesc_start_idx = head_masked;
+
+		netdev_dbg(ena_com_io_cq_to_ena_dev(io_cq)->net_device,
+-			   "ENA q_id: %d packets were completed. first desc idx %u descs# %d\n",
++			   "ENA q_id: %u packets were completed. first desc idx %u descs# %u\n",
+			   io_cq->qid, *first_cdesc_idx, count);
+	} else {
+		io_cq->cur_rx_pkt_cdesc_count = count;
+@@ -███,32 +███,25 @@ static int ena_com_create_meta(struct ena_com_io_sq *io_sq,
+	meta_desc->len_ctrl |= ENA_ETH_IO_TX_META_DESC_EXT_VALID_MASK;
+
+	/* bits 0-9 of the mss */
+-	meta_desc->word2 |= ((u32)ena_meta->mss <<
+-		ENA_ETH_IO_TX_META_DESC_MSS_LO_SHIFT) &
+-		ENA_ETH_IO_TX_META_DESC_MSS_LO_MASK;
++	meta_desc->word2 |= FIELD_PREP(ENA_ETH_IO_TX_META_DESC_MSS_LO_MASK, (u32)ena_meta->mss);
+	/* bits 10-13 of the mss */
+-	meta_desc->len_ctrl |= ((ena_meta->mss >> 10) <<
+-		ENA_ETH_IO_TX_META_DESC_MSS_HI_SHIFT) &
+-		ENA_ETH_IO_TX_META_DESC_MSS_HI_MASK;
++	meta_desc->len_ctrl |=
++		FIELD_PREP(ENA_ETH_IO_TX_META_DESC_MSS_HI_MASK, (ena_meta->mss >> 10));
+
+	/* Extended meta desc */
+	meta_desc->len_ctrl |= ENA_ETH_IO_TX_META_DESC_ETH_META_TYPE_MASK;
+-	meta_desc->len_ctrl |= ((u32)io_sq->phase <<
+-		ENA_ETH_IO_TX_META_DESC_PHASE_SHIFT) &
+-		ENA_ETH_IO_TX_META_DESC_PHASE_MASK;
++	meta_desc->len_ctrl |= FIELD_PREP(ENA_ETH_IO_TX_META_DESC_PHASE_MASK, (u32)io_sq->phase);
+
+	meta_desc->len_ctrl |= ENA_ETH_IO_TX_META_DESC_FIRST_MASK;
+	meta_desc->len_ctrl |= ENA_ETH_IO_TX_META_DESC_META_STORE_MASK;
+
+	meta_desc->word2 |= ena_meta->l3_hdr_len &
+		ENA_ETH_IO_TX_META_DESC_L3_HDR_LEN_MASK;
+-	meta_desc->word2 |= (ena_meta->l3_hdr_offset <<
+-		ENA_ETH_IO_TX_META_DESC_L3_HDR_OFF_SHIFT) &
+-		ENA_ETH_IO_TX_META_DESC_L3_HDR_OFF_MASK;
++	meta_desc->word2 |=
++		FIELD_PREP(ENA_ETH_IO_TX_META_DESC_L3_HDR_OFF_MASK, ena_meta->l3_hdr_offset);
+
+-	meta_desc->word2 |= ((u32)ena_meta->l4_hdr_len <<
+-		ENA_ETH_IO_TX_META_DESC_L4_HDR_LEN_IN_WORDS_SHIFT) &
+-		ENA_ETH_IO_TX_META_DESC_L4_HDR_LEN_IN_WORDS_MASK;
++	meta_desc->word2 |= FIELD_PREP(ENA_ETH_IO_TX_META_DESC_L4_HDR_LEN_IN_WORDS_MASK,
++				       (u32)ena_meta->l4_hdr_len);
+
+	return ena_com_sq_update_tail(io_sq);
+ }
+@@ -███,33 +███,20 @@ static int ena_com_create_and_store_tx_meta_desc(struct ena_com_io_sq *io_sq,
+	return 0;
+ }
+
+-static void ena_com_rx_set_flags(struct ena_com_io_cq *io_cq,
+-				 struct ena_com_rx_ctx *ena_rx_ctx,
++static void ena_com_rx_set_flags(struct ena_com_rx_ctx *ena_rx_ctx,
+				 struct ena_eth_io_rx_cdesc_base *cdesc)
+ {
+	ena_rx_ctx->l3_proto = cdesc->status &
+		ENA_ETH_IO_RX_CDESC_BASE_L3_PROTO_IDX_MASK;
+-	ena_rx_ctx->l4_proto =
+-		(cdesc->status & ENA_ETH_IO_RX_CDESC_BASE_L4_PROTO_IDX_MASK) >>
+-		ENA_ETH_IO_RX_CDESC_BASE_L4_PROTO_IDX_SHIFT;
++	ena_rx_ctx->l4_proto = FIELD_GET(ENA_ETH_IO_RX_CDESC_BASE_L4_PROTO_IDX_MASK, cdesc->status);
+	ena_rx_ctx->l3_csum_err =
+-		!!((cdesc->status & ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK) >>
+-		ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_SHIFT);
++		!!(FIELD_GET(ENA_ETH_IO_RX_CDESC_BASE_L3_CSUM_ERR_MASK, cdesc->status));
+	ena_rx_ctx->l4_csum_err =
+-		!!((cdesc->status & ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK) >>
+-		ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_SHIFT);
++		!!(FIELD_GET(ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_ERR_MASK, cdesc->status));
+	ena_rx_ctx->l4_csum_checked =
+-		!!((cdesc->status & ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK) >>
+-		ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_SHIFT);
++		!!(FIELD_GET(ENA_ETH_IO_RX_CDESC_BASE_L4_CSUM_CHECKED_MASK, cdesc->status));
+	ena_rx_ctx->hash = cdesc->hash;
+-	ena_rx_ctx->frag =
+-		(cdesc->status & ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK) >>
+-		ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_SHIFT;
+-
+-	netdev_dbg(ena_com_io_cq_to_ena_dev(io_cq)->net_device,
+-		   "l3_proto %d l4_proto %d l3_csum_err %d l4_csum_err %d hash %d frag %d cdesc_status %x\n",
+-		   ena_rx_ctx->l3_proto, ena_rx_ctx->l4_proto, ena_rx_ctx->l3_csum_err,
+-		   ena_rx_ctx->l4_csum_err, ena_rx_ctx->hash, ena_rx_ctx->frag, cdesc->status);
++	ena_rx_ctx->frag = FIELD_GET(ENA_ETH_IO_RX_CDESC_BASE_IPV4_FRAG_MASK, cdesc->status);
+ }
+
+ /*****************************************************************************/
+@@ -███,7 +███,7 @@ int ena_com_prepare_tx(struct ena_com_io_sq *io_sq,
+
+	if (unlikely(header_len > io_sq->tx_max_header_size)) {
+		netdev_err(ena_com_io_sq_to_ena_dev(io_sq)->net_device,
+-			   "Header size is too large %d max header: %d\n", header_len,
++			   "Header size is too large %u max header: %u\n", header_len,
+			   io_sq->tx_max_header_size);
+		return -EINVAL;
+	}
+@@ -███,46 +███,33 @@ int ena_com_prepare_tx(struct ena_com_io_sq *io_sq,
+	if (!have_meta)
+		desc->len_ctrl |= ENA_ETH_IO_TX_DESC_FIRST_MASK;
+
+-	desc->buff_addr_hi_hdr_sz |= ((u32)header_len <<
+-		ENA_ETH_IO_TX_DESC_HEADER_LENGTH_SHIFT) &
+-		ENA_ETH_IO_TX_DESC_HEADER_LENGTH_MASK;
+-	desc->len_ctrl |= ((u32)io_sq->phase << ENA_ETH_IO_TX_DESC_PHASE_SHIFT) &
+-		ENA_ETH_IO_TX_DESC_PHASE_MASK;
++	desc->buff_addr_hi_hdr_sz |=
++		FIELD_PREP(ENA_ETH_IO_TX_DESC_HEADER_LENGTH_MASK, (u32)header_len);
++
++	desc->len_ctrl |= FIELD_PREP(ENA_ETH_IO_TX_DESC_PHASE_MASK, (u32)io_sq->phase);
+
+	desc->len_ctrl |= ENA_ETH_IO_TX_DESC_COMP_REQ_MASK;
+
+	/* Bits 0-9 */
+-	desc->meta_ctrl |= ((u32)ena_tx_ctx->req_id <<
+-		ENA_ETH_IO_TX_DESC_REQ_ID_LO_SHIFT) &
+-		ENA_ETH_IO_TX_DESC_REQ_ID_LO_MASK;
++	desc->meta_ctrl |= FIELD_PREP(ENA_ETH_IO_TX_DESC_REQ_ID_LO_MASK, (u32)ena_tx_ctx->req_id);
+
+-	desc->meta_ctrl |= (ena_tx_ctx->df <<
+-		ENA_ETH_IO_TX_DESC_DF_SHIFT) &
+-		ENA_ETH_IO_TX_DESC_DF_MASK;
++	desc->meta_ctrl |= FIELD_PREP(ENA_ETH_IO_TX_DESC_DF_MASK, ena_tx_ctx->df);
+
+	/* Bits 10-15 */
+-	desc->len_ctrl |= ((ena_tx_ctx->req_id >> 10) <<
+-		ENA_ETH_IO_TX_DESC_REQ_ID_HI_SHIFT) &
+-		ENA_ETH_IO_TX_DESC_REQ_ID_HI_MASK;
++	desc->len_ctrl |= FIELD_PREP(ENA_ETH_IO_TX_DESC_REQ_ID_HI_MASK, (ena_tx_ctx->req_id >> 10));
+
+	if (ena_tx_ctx->meta_valid) {
+-		desc->meta_ctrl |= (ena_tx_ctx->tso_enable <<
+-			ENA_ETH_IO_TX_DESC_TSO_EN_SHIFT) &
+-			ENA_ETH_IO_TX_DESC_TSO_EN_MASK;
+-		desc->meta_ctrl |= ena_tx_ctx->l3_proto &
+-			ENA_ETH_IO_TX_DESC_L3_PROTO_IDX_MASK;
+-		desc->meta_ctrl |= (ena_tx_ctx->l4_proto <<
+-			ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_SHIFT) &
+-			ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_MASK;
+-		desc->meta_ctrl |= (ena_tx_ctx->l3_csum_enable <<
+-			ENA_ETH_IO_TX_DESC_L3_CSUM_EN_SHIFT) &
+-			ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK;
+-		desc->meta_ctrl |= (ena_tx_ctx->l4_csum_enable <<
+-			ENA_ETH_IO_TX_DESC_L4_CSUM_EN_SHIFT) &
+-			ENA_ETH_IO_TX_DESC_L4_CSUM_EN_MASK;
+-		desc->meta_ctrl |= (ena_tx_ctx->l4_csum_partial <<
+-			ENA_ETH_IO_TX_DESC_L4_CSUM_PARTIAL_SHIFT) &
+-			ENA_ETH_IO_TX_DESC_L4_CSUM_PARTIAL_MASK;
++		desc->meta_ctrl |=
++			FIELD_PREP(ENA_ETH_IO_TX_DESC_TSO_EN_MASK, ena_tx_ctx->tso_enable);
++		desc->meta_ctrl |= ena_tx_ctx->l3_proto & ENA_ETH_IO_TX_DESC_L3_PROTO_IDX_MASK;
++		desc->meta_ctrl |=
++			FIELD_PREP(ENA_ETH_IO_TX_DESC_L4_PROTO_IDX_MASK, ena_tx_ctx->l4_proto);
++		desc->meta_ctrl |=
++			FIELD_PREP(ENA_ETH_IO_TX_DESC_L3_CSUM_EN_MASK, ena_tx_ctx->l3_csum_enable);
++		desc->meta_ctrl |=
++			FIELD_PREP(ENA_ETH_IO_TX_DESC_L4_CSUM_EN_MASK, ena_tx_ctx->l4_csum_enable);
++		desc->meta_ctrl |= FIELD_PREP(ENA_ETH_IO_TX_DESC_L4_CSUM_PARTIAL_MASK,
++					      ena_tx_ctx->l4_csum_partial);
+	}
+
+	for (i = 0; i < num_bufs; i++) {
+@@ -███,9 +███,8 @@ int ena_com_prepare_tx(struct ena_com_io_sq *io_sq,
+
+			memset(desc, 0x0, sizeof(struct ena_eth_io_tx_desc));
+
+-			desc->len_ctrl |= ((u32)io_sq->phase <<
+-				ENA_ETH_IO_TX_DESC_PHASE_SHIFT) &
+-				ENA_ETH_IO_TX_DESC_PHASE_MASK;
++			desc->len_ctrl |=
++				FIELD_PREP(ENA_ETH_IO_TX_DESC_PHASE_MASK, (u32)io_sq->phase);
+		}
+
+		desc->len_ctrl |= ena_bufs->len &
+@@ -███,11 +███,11 @@ int ena_com_rx_pkt(struct ena_com_io_cq *io_cq,
+	}
+
+	netdev_dbg(ena_com_io_cq_to_ena_dev(io_cq)->net_device,
+-		   "Fetch rx packet: queue %d completed desc: %d\n", io_cq->qid, nb_hw_desc);
++		   "Fetch rx packet: queue %u completed desc: %u\n", io_cq->qid, nb_hw_desc);
+
+	if (unlikely(nb_hw_desc > ena_rx_ctx->max_bufs)) {
+		netdev_err(ena_com_io_cq_to_ena_dev(io_cq)->net_device,
+-			   "Too many RX cdescs (%d) > MAX(%d)\n", nb_hw_desc, ena_rx_ctx->max_bufs);
++			   "Too many RX cdescs (%u) > MAX(%u)\n", nb_hw_desc, ena_rx_ctx->max_bufs);
+		return -ENOSPC;
+	}
+
+@@ -███,11 +███,15 @@ int ena_com_rx_pkt(struct ena_com_io_cq *io_cq,
+	io_sq->next_to_comp += nb_hw_desc;
+
+	netdev_dbg(ena_com_io_cq_to_ena_dev(io_cq)->net_device,
+-		   "[%s][QID#%d] Updating SQ head to: %d\n", __func__, io_sq->qid,
+-		   io_sq->next_to_comp);
++		   "Updating Queue %u, SQ head to: %u\n", io_sq->qid, io_sq->next_to_comp);
+
+	/* Get rx flags from the last pkt */
+-	ena_com_rx_set_flags(io_cq, ena_rx_ctx, cdesc);
++	ena_com_rx_set_flags(ena_rx_ctx, cdesc);
++
++	netdev_dbg(ena_com_io_cq_to_ena_dev(io_cq)->net_device,
++		   "l3_proto %d l4_proto %d l3_csum_err %d l4_csum_err %d hash %d frag %d cdesc_status %x\n",
++		   ena_rx_ctx->l3_proto, ena_rx_ctx->l4_proto, ena_rx_ctx->l3_csum_err,
++		   ena_rx_ctx->l4_csum_err, ena_rx_ctx->hash, ena_rx_ctx->frag, cdesc->status);
+
+	ena_rx_ctx->descs = nb_hw_desc;
+
+@@ -███,16 +███,14 @@ int ena_com_add_single_rx_desc(struct ena_com_io_sq *io_sq,
+
+	desc->length = ena_buf->len;
+
+-	desc->ctrl = ENA_ETH_IO_RX_DESC_FIRST_MASK |
+-		     ENA_ETH_IO_RX_DESC_LAST_MASK |
++	desc->ctrl = ENA_ETH_IO_RX_DESC_FIRST_MASK | ENA_ETH_IO_RX_DESC_LAST_MASK |
+		     ENA_ETH_IO_RX_DESC_COMP_REQ_MASK |
+-		     (io_sq->phase & ENA_ETH_IO_RX_DESC_PHASE_MASK);
++		     FIELD_GET(ENA_ETH_IO_RX_DESC_PHASE_MASK, io_sq->phase);
+
+	desc->req_id = req_id;
+
+	netdev_dbg(ena_com_io_sq_to_ena_dev(io_sq)->net_device,
+-		   "[%s] Adding single RX desc, Queue: %u, req_id: %u\n", __func__, io_sq->qid,
+-		   req_id);
++		   "Adding single RX desc, Queue: %u, req_id: %u\n", io_sq->qid, req_id);
+
+	desc->buff_addr_lo = (u32)ena_buf->paddr;
+	desc->buff_addr_hi =
+diff --git a/drivers/amazon/net/ena/ena_eth_com.h b/drivers/amazon/net/ena/ena_eth_com.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_eth_com.h
++++ b/drivers/amazon/net/ena/ena_eth_com.h
+@@ -███,6 +███,6 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #ifndef ENA_ETH_COM_H_
+@@ -███,6 +███,17 @@
+ #define ENA_LLQ_HEADER		(128UL - ENA_LLQ_ENTRY_DESC_CHUNK_SIZE)
+ #define ENA_LLQ_LARGE_HEADER	(256UL - ENA_LLQ_ENTRY_DESC_CHUNK_SIZE)
+
++void ena_com_dump_single_rx_cdesc(struct ena_com_io_cq *io_cq,
++				  struct ena_eth_io_rx_cdesc_base *desc);
++void ena_com_dump_single_tx_cdesc(struct ena_com_io_cq *io_cq,
++				  struct ena_eth_io_tx_cdesc *desc);
++struct ena_eth_io_rx_cdesc_base *ena_com_get_next_rx_cdesc(
++	struct ena_com_io_cq *io_cq);
++struct ena_eth_io_rx_cdesc_base *ena_com_rx_cdesc_idx_to_ptr(
++	struct ena_com_io_cq *io_cq, u16 idx);
++struct ena_eth_io_tx_cdesc *ena_com_tx_cdesc_idx_to_ptr(
++	struct ena_com_io_cq *io_cq, u16 idx);
++
+ struct ena_com_tx_ctx {
+	struct ena_com_tx_meta ena_meta;
+	struct ena_com_buf *ena_bufs;
+@@ -███,8 +███,8 @@ static inline void ena_com_update_numa_node(struct ena_com_io_cq *io_cq,
+	if (!io_cq->numa_node_cfg_reg)
+		return;
+
+-	numa_cfg.numa_cfg = (numa_node & ENA_ETH_IO_NUMA_NODE_CFG_REG_NUMA_MASK)
+-		| ENA_ETH_IO_NUMA_NODE_CFG_REG_ENABLED_MASK;
++	numa_cfg.numa_cfg = FIELD_GET(ENA_ETH_IO_NUMA_NODE_CFG_REG_NUMA_MASK, numa_node) |
++			    ENA_ETH_IO_NUMA_NODE_CFG_REG_ENABLED_MASK;
+
+	writel(numa_cfg.numa_cfg, io_cq->numa_node_cfg_reg);
+ }
+@@ -███,7 +███,7 @@ static inline int ena_com_tx_comp_req_id_get(struct ena_com_io_cq *io_cq,
+	 * expected, it mean that the device still didn't update
+	 * this completion.
+	 */
+-	cdesc_phase = flags & ENA_ETH_IO_TX_CDESC_PHASE_MASK;
++	cdesc_phase = FIELD_GET(ENA_ETH_IO_TX_CDESC_PHASE_MASK, flags);
+	if (cdesc_phase != expected_phase)
+		return -EAGAIN;
+
+diff --git a/drivers/amazon/net/ena/ena_eth_io_defs.h b/drivers/amazon/net/ena/ena_eth_io_defs.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_eth_io_defs.h
++++ b/drivers/amazon/net/ena/ena_eth_io_defs.h
+@@ -███,7 +███,8 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
++
+ #ifndef _ENA_ETH_IO_H_
+ #define _ENA_ETH_IO_H_
+
+diff --git a/drivers/amazon/net/ena/ena_ethtool.c b/drivers/amazon/net/ena/ena_ethtool.c
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_ethtool.c
++++ b/drivers/amazon/net/ena/ena_ethtool.c
+@@ -███,6 +███,6 @@
+ // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #include <linux/ethtool.h>
+@@ -███,6 +███,7 @@ static const struct ena_stats ena_stats_global_strings[] = {
+	ENA_STAT_GLOBAL_ENTRY(missing_admin_interrupt),
+	ENA_STAT_GLOBAL_ENTRY(admin_to),
+	ENA_STAT_GLOBAL_ENTRY(device_request_reset),
++	ENA_STAT_GLOBAL_ENTRY(missing_first_intr),
+	ENA_STAT_GLOBAL_ENTRY(suspend),
+	ENA_STAT_GLOBAL_ENTRY(resume),
+	ENA_STAT_GLOBAL_ENTRY(interface_down),
+@@ -███,6 +███,8 @@ static const struct ena_stats ena_stats_tx_strings[] = {
+	ENA_STAT_TX_ENTRY(missed_tx),
+	ENA_STAT_TX_ENTRY(unmask_interrupt),
+ #ifdef ENA_AF_XDP_SUPPORT
++	ENA_STAT_TX_ENTRY(xsk_cnt),
++	ENA_STAT_TX_ENTRY(xsk_bytes),
+	ENA_STAT_TX_ENTRY(xsk_need_wakeup_set),
+	ENA_STAT_TX_ENTRY(xsk_wakeup_request),
+ #endif /* ENA_AF_XDP_SUPPORT */
+@@ -███,7 +███,6 @@ static void ena_safe_update_stat(u64 *src, u64 *dst,
+	} while (ena_u64_stats_fetch_retry(syncp, start));
+ }
+
+-
+ static void ena_metrics_stats(struct ena_adapter *adapter, u64 **data)
+ {
+	struct ena_com_dev *dev = adapter->ena_dev;
+@@ -███,11 +███,11 @@ static void ena_metrics_stats(struct ena_adapter *adapter, u64 **data)
+		len = supported_metrics_count * sizeof(u64);
+
+		/* Fill the data buffer, and advance its pointer */
+-		ena_com_get_customer_metrics(adapter->ena_dev, (char *)(*data), len);
++		ena_com_get_customer_metrics(dev, (char *)(*data), len);
+		(*data) += supported_metrics_count;
+
+-	} else if (ena_com_get_cap(adapter->ena_dev, ENA_ADMIN_ENI_STATS)) {
+-		ena_com_get_eni_stats(adapter->ena_dev, &adapter->eni_stats);
++	} else if (ena_com_get_cap(dev, ENA_ADMIN_ENI_STATS)) {
++		ena_com_get_eni_stats(dev, &adapter->eni_stats);
+		/* Updating regardless of rc - once we told ethtool how many stats we have
+		 * it will print that much stats. We can't leave holes in the stats
+		 */
+@@ -███,8 +███,8 @@ static void ena_metrics_stats(struct ena_adapter *adapter, u64 **data)
+		}
+	}
+
+-	if (ena_com_get_cap(adapter->ena_dev, ENA_ADMIN_ENA_SRD_INFO)) {
+-		ena_com_get_ena_srd_info(adapter->ena_dev, &adapter->ena_srd_info);
++	if (ena_com_get_cap(dev, ENA_ADMIN_ENA_SRD_INFO)) {
++		ena_com_get_ena_srd_info(dev, &adapter->ena_srd_info);
+		/* Get ENA SRD mode */
+		ptr = (u64 *)&adapter->ena_srd_info;
+		ena_safe_update_stat(ptr, (*data)++, &adapter->syncp);
+@@ -███,7 +███,7 @@ static void ena_queue_stats(struct ena_adapter *adapter, u64 **data)
+	}
+ }
+
+-static void ena_com_admin_queue_stats(struct ena_adapter *adapter, u64 **data)
++static void ena_get_admin_queue_stats(struct ena_adapter *adapter, u64 **data)
+ {
+	const struct ena_stats *ena_stats;
+	u64 *ptr;
+@@ -███,7 +███,7 @@ static void ena_com_admin_queue_stats(struct ena_adapter *adapter, u64 **data)
+	}
+ }
+
+-static void ena_com_phc_stats(struct ena_adapter *adapter, u64 **data)
++static void ena_get_phc_stats(struct ena_adapter *adapter, u64 **data)
+ {
+	const struct ena_stats *ena_stats;
+	u64 *ptr;
+@@ -███,10 +███,10 @@ static void ena_get_stats(struct ena_adapter *adapter,
+		ena_metrics_stats(adapter, &data);
+
+	ena_queue_stats(adapter, &data);
+-	ena_com_admin_queue_stats(adapter, &data);
++	ena_get_admin_queue_stats(adapter, &data);
+
+	if (ena_phc_is_active(adapter))
+-		ena_com_phc_stats(adapter, &data);
++		ena_get_phc_stats(adapter, &data);
+ }
+
+ static void ena_get_ethtool_stats(struct net_device *netdev,
+@@ -███,7 +███,11 @@ static void ena_get_ethtool_stats(struct net_device *netdev,
+ }
+
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 5, 0)
++#ifdef ENA_HAVE_KERNEL_ETHTOOL_TS_INFO
++static int ena_get_ts_info(struct net_device *netdev, struct kernel_ethtool_ts_info *info)
++#else
+ static int ena_get_ts_info(struct net_device *netdev, struct ethtool_ts_info *info)
++#endif /* ENA_HAVE_KERNEL_ETHTOOL_TS_INFO */
+ {
+	struct ena_adapter *adapter = netdev_priv(netdev);
+
+@@ -███,8 +███,9 @@ static int ena_get_sw_stats_count(struct ena_adapter *adapter)
+ static int ena_get_hw_stats_count(struct ena_adapter *adapter)
+ {
+	struct ena_com_dev *dev = adapter->ena_dev;
+-	int count = ENA_STATS_ARRAY_ENA_SRD *
+-			ena_com_get_cap(adapter->ena_dev, ENA_ADMIN_ENA_SRD_INFO);
++	int count;
++
++	count = ENA_STATS_ARRAY_ENA_SRD * ena_com_get_cap(dev, ENA_ADMIN_ENA_SRD_INFO);
+
+	if (ena_com_get_cap(dev, ENA_ADMIN_CUSTOMER_METRICS))
+		count += ena_com_get_customer_metric_count(dev);
+@@ -███,14 +███,14 @@ static void ena_metrics_stats_strings(struct ena_adapter *adapter, u8 **data)
+				ethtool_puts(data, ena_metrics->name);
+			}
+		}
+-	} else if (ena_com_get_cap(adapter->ena_dev, ENA_ADMIN_ENI_STATS)) {
++	} else if (ena_com_get_cap(dev, ENA_ADMIN_ENI_STATS)) {
+		for (i = 0; i < ENA_STATS_ARRAY_ENI; i++) {
+			ena_stats = &ena_stats_eni_strings[i];
+			ethtool_puts(data, ena_stats->name);
+		}
+	}
+
+-	if (ena_com_get_cap(adapter->ena_dev, ENA_ADMIN_ENA_SRD_INFO)) {
++	if (ena_com_get_cap(dev, ENA_ADMIN_ENA_SRD_INFO)) {
+		for (i = 0; i < ENA_STATS_ARRAY_ENA_SRD; i++) {
+			ena_stats = &ena_srd_info_strings[i];
+			ethtool_puts(data, ena_stats->name);
+@@ -███,7 +███,7 @@ static void ena_queue_strings(struct ena_adapter *adapter, u8 **data)
+	}
+ }
+
+-static void ena_com_admin_strings(u8 **data)
++static void ena_get_admin_strings(u8 **data)
+ {
+	const struct ena_stats *ena_stats;
+	int i;
+@@ -███,7 +███,7 @@ static void ena_com_admin_strings(u8 **data)
+	}
+ }
+
+-static void ena_com_phc_strings(u8 **data)
++static void ena_get_phc_strings(u8 **data)
+ {
+	const struct ena_stats *ena_stats;
+	int i;
+@@ -███,10 +███,10 @@ static void ena_get_strings(struct ena_adapter *adapter,
+		ena_metrics_stats_strings(adapter, &data);
+
+	ena_queue_strings(adapter, &data);
+-	ena_com_admin_strings(&data);
++	ena_get_admin_strings(&data);
+
+	if (ena_phc_is_active(adapter))
+-		ena_com_phc_strings(&data);
++		ena_get_phc_strings(&data);
+ }
+
+ static void ena_get_ethtool_strings(struct net_device *netdev,
+@@ -███,7 +███,7 @@ static void ena_get_drvinfo(struct net_device *dev,
+			  "module version will be truncated, status = %zd\n", ret);
+
+	ret = strscpy(info->bus_info, pci_name(adapter->pdev),
+-		sizeof(info->bus_info));
++		      sizeof(info->bus_info));
+	if (ret < 0)
+		netif_dbg(adapter, drv, dev,
+			  "bus info will be truncated, status = %zd\n", ret);
+@@ -███,6 +███,125 @@ static int ena_set_rss_hash(struct ena_com_dev *ena_dev,
+	return ena_com_fill_hash_ctrl(ena_dev, proto, hash_fields);
+ }
+
++static int ena_set_steering_rule(struct ena_com_dev *ena_dev, struct ethtool_rxnfc *info)
++{
++	struct ena_com_flow_steering_rule_params rule_params = {};
++	struct ena_admin_flow_steering_rule_params *flow_params;
++	struct ethtool_rx_flow_spec *fs = &info->fs;
++	struct ethtool_tcpip4_spec *tcp_ip4;
++	struct ethtool_usrip4_spec *usr_ip4;
++#ifdef ENA_ETHTOOL_NFC_IPV6_SUPPORTED
++	struct ethtool_tcpip6_spec *tcp_ip6;
++	struct ethtool_usrip6_spec *usr_ip6;
++#endif
++	u32 flow_type = info->fs.flow_type;
++	u16 rule_idx;
++	int rc;
++
++	flow_params = &rule_params.flow_params;
++
++	/* no support for wake-on-lan or packets drop for rule matching */
++	if ((fs->ring_cookie == RX_CLS_FLOW_DISC) || (fs->ring_cookie == RX_CLS_FLOW_WAKE))
++		return -EOPNOTSUPP;
++
++	/* no support for any special rule placement */
++	if (fs->location & RX_CLS_LOC_SPECIAL)
++		return -EOPNOTSUPP;
++
++	switch (flow_type) {
++	case TCP_V4_FLOW:
++	case UDP_V4_FLOW:
++		if (flow_type == TCP_V4_FLOW)
++			rule_params.flow_type = ENA_ADMIN_FLOW_IPV4_TCP;
++		else
++			rule_params.flow_type = ENA_ADMIN_FLOW_IPV4_UDP;
++
++		tcp_ip4 = &fs->h_u.tcp_ip4_spec;
++		memcpy(flow_params->src_ip, &tcp_ip4->ip4src, sizeof(tcp_ip4->ip4src));
++		memcpy(flow_params->dst_ip, &tcp_ip4->ip4dst, sizeof(tcp_ip4->ip4dst));
++		flow_params->src_port = htons(tcp_ip4->psrc);
++		flow_params->dst_port = htons(tcp_ip4->pdst);
++		flow_params->tos = tcp_ip4->tos;
++
++		tcp_ip4 = &fs->m_u.tcp_ip4_spec;
++		memcpy(flow_params->src_ip_mask, &tcp_ip4->ip4src, sizeof(tcp_ip4->ip4src));
++		memcpy(flow_params->dst_ip_mask, &tcp_ip4->ip4dst, sizeof(tcp_ip4->ip4dst));
++		flow_params->src_port_mask = htons(tcp_ip4->psrc);
++		flow_params->dst_port_mask = htons(tcp_ip4->pdst);
++		flow_params->tos_mask = tcp_ip4->tos;
++		break;
++	case IP_USER_FLOW:
++		rule_params.flow_type = ENA_ADMIN_FLOW_IPV4;
++
++		usr_ip4 = &fs->h_u.usr_ip4_spec;
++		memcpy(flow_params->src_ip, &usr_ip4->ip4src, sizeof(usr_ip4->ip4src));
++		memcpy(flow_params->dst_ip, &usr_ip4->ip4dst, sizeof(usr_ip4->ip4dst));
++		flow_params->tos = usr_ip4->tos;
++
++		usr_ip4 = &fs->m_u.usr_ip4_spec;
++		memcpy(flow_params->src_ip_mask, &usr_ip4->ip4src, sizeof(usr_ip4->ip4src));
++		memcpy(flow_params->dst_ip_mask, &usr_ip4->ip4dst, sizeof(usr_ip4->ip4dst));
++		flow_params->tos_mask = usr_ip4->tos;
++		break;
++#ifdef ENA_ETHTOOL_NFC_IPV6_SUPPORTED
++	case TCP_V6_FLOW:
++	case UDP_V6_FLOW:
++		if (flow_type == TCP_V6_FLOW)
++			rule_params.flow_type = ENA_ADMIN_FLOW_IPV6_TCP;
++		else
++			rule_params.flow_type = ENA_ADMIN_FLOW_IPV6_UDP;
++
++		tcp_ip6 = &fs->h_u.tcp_ip6_spec;
++		memcpy(flow_params->src_ip, &tcp_ip6->ip6src, sizeof(tcp_ip6->ip6src));
++		memcpy(flow_params->dst_ip, &tcp_ip6->ip6dst, sizeof(tcp_ip6->ip6dst));
++		flow_params->src_port = htons(tcp_ip6->psrc);
++		flow_params->dst_port = htons(tcp_ip6->pdst);
++
++		tcp_ip6 = &fs->m_u.tcp_ip6_spec;
++		memcpy(flow_params->src_ip_mask, &tcp_ip6->ip6src, sizeof(tcp_ip6->ip6src));
++		memcpy(flow_params->dst_ip_mask, &tcp_ip6->ip6dst, sizeof(tcp_ip6->ip6dst));
++		flow_params->src_port_mask = htons(tcp_ip6->psrc);
++		flow_params->dst_port_mask = htons(tcp_ip6->pdst);
++		break;
++	case IPV6_USER_FLOW:
++		rule_params.flow_type = ENA_ADMIN_FLOW_IPV6;
++
++		usr_ip6 = &fs->h_u.usr_ip6_spec;
++		memcpy(flow_params->src_ip, &usr_ip6->ip6src, sizeof(usr_ip6->ip6src));
++		memcpy(flow_params->dst_ip, &usr_ip6->ip6dst, sizeof(usr_ip6->ip6dst));
++
++		usr_ip6 = &fs->m_u.usr_ip6_spec;
++		memcpy(flow_params->src_ip_mask, &usr_ip6->ip6src, sizeof(usr_ip6->ip6src));
++		memcpy(flow_params->dst_ip_mask, &usr_ip6->ip6dst, sizeof(usr_ip6->ip6dst));
++		break;
++#endif
++	case SCTP_V4_FLOW:
++	case AH_V4_FLOW:
++	case SCTP_V6_FLOW:
++	case AH_V6_FLOW:
++	case ESP_V4_FLOW:
++	case ESP_V6_FLOW:
++	case ETHER_FLOW:
++		return -EOPNOTSUPP;
++	default:
++		return -EINVAL;
++	}
++
++	rule_params.qid = fs->ring_cookie;
++	rule_idx = fs->location;
++
++	rc = ena_com_flow_steering_add_rule(ena_dev, &rule_params, &rule_idx);
++	if (unlikely(rc < 0))
++		return rc;
++
++	return 0;
++}
++
++static int ena_delete_steering_rule(struct ena_com_dev *ena_dev, struct ethtool_rxnfc *info)
++{
++	return ena_com_flow_steering_remove_rule(ena_dev, info->fs.location);
++}
++
+ static int ena_set_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info)
+ {
+	struct ena_adapter *adapter = netdev_priv(netdev);
+@@ -███,8 +███,12 @@ static int ena_set_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info)
+	case ETHTOOL_SRXFH:
+		rc = ena_set_rss_hash(adapter->ena_dev, info);
+		break;
+-	case ETHTOOL_SRXCLSRLDEL:
+	case ETHTOOL_SRXCLSRLINS:
++		rc = ena_set_steering_rule(adapter->ena_dev, info);
++		break;
++	case ETHTOOL_SRXCLSRLDEL:
++		rc = ena_delete_steering_rule(adapter->ena_dev, info);
++		break;
+	default:
+		netif_err(adapter, drv, netdev,
+			  "Command parameter %d is not supported\n", info->cmd);
+@@ -███,6 +███,149 @@ static int ena_set_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info)
+	return rc;
+ }
+
++static int ena_get_steering_rules_cnt(struct ena_com_dev *ena_dev, struct ethtool_rxnfc *info)
++{
++	if (!(ena_dev->supported_features & BIT(ENA_ADMIN_FLOW_STEERING_CONFIG)))
++		return -EOPNOTSUPP;
++
++	info->rule_cnt = ena_dev->flow_steering.active_rules_cnt;
++	info->data = ena_dev->flow_steering.tbl_size;
++
++	return 0;
++}
++
++static int ena_get_steering_rule(struct ena_com_dev *ena_dev, struct ethtool_rxnfc *info)
++{
++	struct ena_com_flow_steering_rule_params rule_params = {};
++	struct ena_admin_flow_steering_rule_params *flow_params;
++	struct ethtool_rx_flow_spec *fs = &info->fs;
++	struct ethtool_tcpip4_spec *tcp_ip4;
++	struct ethtool_usrip4_spec *usr_ip4;
++#ifdef ENA_ETHTOOL_NFC_IPV6_SUPPORTED
++	struct ethtool_tcpip6_spec *tcp_ip6;
++	struct ethtool_usrip6_spec *usr_ip6;
++#endif
++	u32 flow_type;
++	int rc = 0;
++
++	flow_params = &rule_params.flow_params;
++
++	rc = ena_com_flow_steering_get_rule(ena_dev, &rule_params, fs->location);
++	if (unlikely(rc))
++		return rc;
++
++	flow_type = rule_params.flow_type;
++
++	switch (flow_type) {
++	case ENA_ADMIN_FLOW_IPV4_TCP:
++	case ENA_ADMIN_FLOW_IPV4_UDP:
++		if (flow_type == ENA_ADMIN_FLOW_IPV4_TCP)
++			fs->flow_type = TCP_V4_FLOW;
++		else
++			fs->flow_type = UDP_V4_FLOW;
++
++		tcp_ip4 = &fs->h_u.tcp_ip4_spec;
++		memcpy(&tcp_ip4->ip4src, flow_params->src_ip, sizeof(tcp_ip4->ip4src));
++		memcpy(&tcp_ip4->ip4dst, flow_params->dst_ip, sizeof(tcp_ip4->ip4dst));
++		tcp_ip4->psrc = ntohs(flow_params->src_port);
++		tcp_ip4->pdst = ntohs(flow_params->dst_port);
++		tcp_ip4->tos = flow_params->tos;
++
++		tcp_ip4 = &fs->m_u.tcp_ip4_spec;
++		memcpy(&tcp_ip4->ip4src, flow_params->src_ip_mask, sizeof(tcp_ip4->ip4src));
++		memcpy(&tcp_ip4->ip4dst, flow_params->dst_ip_mask, sizeof(tcp_ip4->ip4dst));
++		tcp_ip4->psrc = ntohs(flow_params->src_port_mask);
++		tcp_ip4->pdst = ntohs(flow_params->dst_port_mask);
++		tcp_ip4->tos = flow_params->tos_mask;
++		break;
++	case ENA_ADMIN_FLOW_IPV4:
++		fs->flow_type = IP_USER_FLOW;
++
++		usr_ip4 = &fs->h_u.usr_ip4_spec;
++		memcpy(&usr_ip4->ip4src, flow_params->src_ip, sizeof(usr_ip4->ip4src));
++		memcpy(&usr_ip4->ip4dst, flow_params->dst_ip, sizeof(usr_ip4->ip4dst));
++		usr_ip4->tos = flow_params->tos;
++		usr_ip4->ip_ver = ETH_RX_NFC_IP4;
++
++		usr_ip4 = &fs->m_u.usr_ip4_spec;
++		memcpy(&usr_ip4->ip4src, flow_params->src_ip_mask, sizeof(usr_ip4->ip4src));
++		memcpy(&usr_ip4->ip4dst, flow_params->dst_ip_mask, sizeof(usr_ip4->ip4dst));
++		usr_ip4->tos = flow_params->tos_mask;
++		break;
++#ifdef ENA_ETHTOOL_NFC_IPV6_SUPPORTED
++	case ENA_ADMIN_FLOW_IPV6_TCP:
++	case ENA_ADMIN_FLOW_IPV6_UDP:
++		if (flow_type == ENA_ADMIN_FLOW_IPV6_TCP)
++			fs->flow_type = TCP_V6_FLOW;
++		else
++			fs->flow_type = UDP_V6_FLOW;
++
++		tcp_ip6 = &fs->h_u.tcp_ip6_spec;
++		memcpy(&tcp_ip6->ip6src, flow_params->src_ip, sizeof(tcp_ip6->ip6src));
++		memcpy(&tcp_ip6->ip6dst, flow_params->dst_ip, sizeof(tcp_ip6->ip6dst));
++		tcp_ip6->psrc = ntohs(flow_params->src_port);
++		tcp_ip6->pdst = ntohs(flow_params->dst_port);
++
++		tcp_ip6 = &fs->m_u.tcp_ip6_spec;
++		memcpy(&tcp_ip6->ip6src, flow_params->src_ip_mask, sizeof(tcp_ip6->ip6src));
++		memcpy(&tcp_ip6->ip6dst, flow_params->dst_ip_mask, sizeof(tcp_ip6->ip6dst));
++		tcp_ip6->psrc = ntohs(flow_params->src_port_mask);
++		tcp_ip6->pdst = ntohs(flow_params->dst_port_mask);
++		break;
++	case ENA_ADMIN_FLOW_IPV6:
++		fs->flow_type = IPV6_USER_FLOW;
++
++		usr_ip6 = &fs->h_u.usr_ip6_spec;
++		memcpy(&usr_ip6->ip6src, flow_params->src_ip, sizeof(usr_ip6->ip6src));
++		memcpy(&usr_ip6->ip6dst, flow_params->dst_ip, sizeof(usr_ip6->ip6dst));
++
++		usr_ip6 = &fs->m_u.usr_ip6_spec;
++		memcpy(&usr_ip6->ip6src, flow_params->src_ip_mask, sizeof(usr_ip6->ip6src));
++		memcpy(&usr_ip6->ip6dst, flow_params->dst_ip_mask, sizeof(usr_ip6->ip6dst));
++		break;
++#endif
++	default:
++		netdev_err(ena_dev->net_device,
++			   "Flow steering rule received has invalid flow type %u\n",
++			   flow_type);
++		rc = -EINVAL;
++		break;
++	}
++
++	fs->ring_cookie = rule_params.qid;
++
++	return rc;
++}
++
++static int ena_get_all_steering_rules(struct ena_com_dev *ena_dev, struct ethtool_rxnfc *info,
++				      u32 *rules)
++{
++	struct ena_com_flow_steering *flow_steering = &ena_dev->flow_steering;
++	int i, loc_idx = 0;
++
++	if (!(ena_dev->supported_features & BIT(ENA_ADMIN_FLOW_STEERING_CONFIG)))
++		return -EOPNOTSUPP;
++
++	info->data = flow_steering->tbl_size;
++	for (i = 0; i < flow_steering->tbl_size; i++) {
++		if (flow_steering->flow_steering_tbl[i].in_use) {
++			/* to avoid access out of bounds index in case
++			 * the rules buf provided is too small
++			 */
++			if (loc_idx >= info->rule_cnt)
++				return -EMSGSIZE;
++
++			/* the loop iterator represents the rule location */
++			rules[loc_idx++] = i;
++
++		}
++	}
++
++	info->rule_cnt = loc_idx;
++
++	return 0;
++}
++
+ #if LINUX_VERSION_CODE <= KERNEL_VERSION(3, 2, 0)
+ static int ena_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info,
+			 void *rules)
+@@ -███,8 +███,14 @@ static int ena_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info,
+		rc = ena_get_rss_hash(adapter->ena_dev, info);
+		break;
+	case ETHTOOL_GRXCLSRLCNT:
++		rc = ena_get_steering_rules_cnt(adapter->ena_dev, info);
++		break;
+	case ETHTOOL_GRXCLSRULE:
++		rc = ena_get_steering_rule(adapter->ena_dev, info);
++		break;
+	case ETHTOOL_GRXCLSRLALL:
++		rc = ena_get_all_steering_rules(adapter->ena_dev, info, rules);
++		break;
+	default:
+		netif_err(adapter, drv, netdev,
+			  "Command parameter %d is not supported\n", info->cmd);
+@@ -███,7 +███,7 @@ static int ena_set_priv_flags(struct net_device *netdev, u32 priv_flags)
+ }
+
+ static const struct ethtool_ops ena_ethtool_ops = {
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
++#ifdef ENA_HAVE_ETHTOOL_OPS_SUPPORTED_COALESCE_PARAMS
+	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
+				     ETHTOOL_COALESCE_USE_ADAPTIVE_RX,
+ #endif
+@@ -███,10 +███,9 @@ void ena_set_ethtool_ops(struct net_device *netdev)
+ static void ena_dump_stats_ex(struct ena_adapter *adapter, u8 *buf)
+ {
+	struct net_device *netdev = adapter->netdev;
++	int strings_num, i, rc;
+	u8 *strings_buf;
+	u64 *data_buf;
+-	int strings_num;
+-	int i, rc;
+
+	strings_num = ena_get_sw_stats_count(adapter);
+	if (strings_num <= 0) {
+diff --git a/drivers/amazon/net/ena/ena_lpc.c b/drivers/amazon/net/ena/ena_lpc.c
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_lpc.c
++++ b/drivers/amazon/net/ena/ena_lpc.c
+@@ -███,7 +███,8 @@
+ // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
+-/*
+- * Copyright 2015-2021 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
++
+ #include "ena_lpc.h"
+ #include "ena_xdp.h"
+
+@@ -███,7 +███,7 @@ static void ena_replace_cache_page(struct ena_ring *rx_ring,
+
+	new_page = ena_alloc_map_page(rx_ring, &dma);
+
+-	if (unlikely(IS_ERR(new_page)))
++	if (IS_ERR(new_page))
+		return;
+
+	ena_put_unmap_cache_page(rx_ring, ena_page);
+@@ -███,7 +███,7 @@ struct page *ena_lpc_get_page(struct ena_ring *rx_ring, dma_addr_t *dma,
+
+		/* Add a new page to the cache */
+		ena_page->page = ena_alloc_map_page(rx_ring, dma);
+-		if (unlikely(IS_ERR(ena_page->page)))
++		if (IS_ERR(ena_page->page))
+			return ena_page->page;
+
+		ena_page->dma_addr = *dma;
+@@ -███,13 +███,16 @@ bool ena_is_lpc_supported(struct ena_adapter *adapter,
+
+	print_log = (error_print) ? netdev_err : netdev_info;
+
+-	/* LPC is disabled below min number of channels */
+-	if (channels_nr < ENA_LPC_MIN_NUM_OF_CHANNELS) {
++	/* By default, LPC is disabled below a minimal number of channels,
++	 * unless explicitly enabled.
++	 */
++	if (channels_nr < ENA_LPC_MIN_NUM_OF_CHANNELS &&
++	    adapter->configured_lpc_size == ENA_LPC_MULTIPLIER_NOT_CONFIGURED) {
+		print_log(adapter->netdev,
+-			  "Local page cache is disabled for less than %d channels\n",
+-			  ENA_LPC_MIN_NUM_OF_CHANNELS);
++			 "Local page cache is disabled for less than %d channels\n",
++			 ENA_LPC_MIN_NUM_OF_CHANNELS);
+
+-		/* Disable LPC for such case. It can enabled again through
++		/* Disable LPC for such case. It can be enabled again through
+		 * ethtool private-flag.
+		 */
+		adapter->used_lpc_size = 0;
+diff --git a/drivers/amazon/net/ena/ena_lpc.h b/drivers/amazon/net/ena/ena_lpc.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_lpc.h
++++ b/drivers/amazon/net/ena/ena_lpc.h
+@@ -███,6 +███,6 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2021 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #include "ena_netdev.h"
+@@ -███,6 +███,7 @@
+ /* LPC definitions */
+ #define ENA_LPC_DEFAULT_MULTIPLIER 2
+ #define ENA_LPC_MAX_MULTIPLIER 32
++#define ENA_LPC_MULTIPLIER_NOT_CONFIGURED -1
+ #define ENA_LPC_MULTIPLIER_UNIT 1024
+ #define ENA_LPC_MIN_NUM_OF_CHANNELS 16
+
+@@ -███,7 +███,7 @@ struct ena_page_cache {
+	/* Maximum number of pages the cache can hold */
+	u32 max_size;
+
+-	struct ena_page cache[0];
++	struct ena_page cache[];
+ } ____cacheline_aligned;
+
+ int ena_create_page_caches(struct ena_adapter *adapter);
+diff --git a/drivers/amazon/net/ena/ena_netdev.c b/drivers/amazon/net/ena/ena_netdev.c
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_netdev.c
++++ b/drivers/amazon/net/ena/ena_netdev.c
+@@ -███,6 +███,6 @@
+ // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+@@ -███,6 +███,7 @@
+ #include "ena_lpc.h"
+
+ #include "ena_phc.h"
++
+ static char version[] = DEVICE_NAME " v" DRV_MODULE_GENERATION "\n";
+
+ MODULE_AUTHOR("Amazon.com, Inc. or its affiliates");
+@@ -███,8 +███,8 @@ static int enable_bql = 0;
+ module_param(enable_bql, int, 0444);
+ MODULE_PARM_DESC(enable_bql, "Enable BQL.\n");
+
+-static int lpc_size = ENA_LPC_DEFAULT_MULTIPLIER;
+-module_param(lpc_size, uint, 0444);
++static int lpc_size = ENA_LPC_MULTIPLIER_NOT_CONFIGURED;
++module_param(lpc_size, int, 0444);
+ MODULE_PARM_DESC(lpc_size, "Each local page cache (lpc) holds N * 1024 pages. This parameter sets N which is rounded up to a multiplier of 2. If zero, the page cache is disabled. Max: 32\n");
+
+ #ifdef ENA_PHC_SUPPORT
+@@ -███,7 +███,7 @@ MODULE_DEVICE_TABLE(pci, ena_pci_tbl);
+ static int ena_rss_init_default(struct ena_adapter *adapter);
+ static void check_for_admin_com_state(struct ena_adapter *adapter);
+ static void ena_set_dev_offloads(struct ena_com_dev_get_features_ctx *feat,
+-				 struct net_device *netdev);
++				 struct ena_adapter *adapter);
+
+ static void ena_tx_timeout(struct net_device *dev, unsigned int txqueue)
+ {
+@@ -███,7 +███,7 @@ static void ena_tx_timeout(struct net_device *dev, unsigned int txqueue)
+	if (threshold < time_since_last_napi && napi_scheduled) {
+		netdev_err(dev,
+			   "napi handler hasn't been called for a long time but is scheduled\n");
+-			   reset_reason = ENA_REGS_RESET_SUSPECTED_POLL_STARVATION;
++		reset_reason = ENA_REGS_RESET_SUSPECTED_POLL_STARVATION;
+	}
+ schedule_reset:
+	/* Change the state of the device to trigger reset
+@@ -███,7 +███,7 @@ static int ena_change_mtu(struct net_device *dev, int new_mtu)
+	if (!ret) {
+		netif_dbg(adapter, drv, dev, "Set MTU to %d\n", new_mtu);
+		update_rx_ring_mtu(adapter, new_mtu);
+-		dev->mtu = new_mtu;
++		WRITE_ONCE(dev->mtu, new_mtu);
+	} else {
+		netif_err(adapter, drv, dev, "Failed to set MTU to %d\n",
+			  new_mtu);
+@@ -███,11 +███,6 @@ int ena_xmit_common(struct ena_adapter *adapter,
+		return rc;
+	}
+
+-	u64_stats_update_begin(&ring->syncp);
+-	ring->tx_stats.cnt++;
+-	ring->tx_stats.bytes += bytes;
+-	u64_stats_update_end(&ring->syncp);
+-
+	tx_info->tx_descs = nb_hw_desc;
+	tx_info->total_tx_size = bytes;
+	tx_info->tx_sent_jiffies = jiffies;
+@@ -███,8 +███,8 @@ int ena_xmit_common(struct ena_adapter *adapter,
+ static int ena_init_rx_cpu_rmap(struct ena_adapter *adapter)
+ {
+ #ifdef CONFIG_RFS_ACCEL
+-	u32 i;
+	int rc;
++	u32 i;
+
+	adapter->netdev->rx_cpu_rmap = alloc_irq_cpu_rmap(adapter->num_io_queues);
+	if (!adapter->netdev->rx_cpu_rmap)
+@@ -███,8 +███,8 @@ void ena_init_io_rings(struct ena_adapter *adapter,
+  */
+ static int ena_setup_tx_resources(struct ena_adapter *adapter, int qid)
+ {
+-	struct ena_ring *tx_ring = &adapter->tx_ring[qid];
+	struct ena_irq *ena_irq = &adapter->irq_tbl[ENA_IO_IRQ_IDX(qid)];
++	struct ena_ring *tx_ring = &adapter->tx_ring[qid];
+	int size, i, node;
+
+	if (tx_ring->tx_buffer_info) {
+@@ -███,12 +███,12 @@ static void ena_free_tx_resources(struct ena_adapter *adapter, int qid)
+	tx_ring->push_buf_intermediate_buf = NULL;
+ }
+
+-int ena_setup_tx_resources_in_range(struct ena_adapter *adapter,
+-				    int first_index, int count)
++static int ena_setup_all_tx_resources(struct ena_adapter *adapter)
+ {
++	u32 queues_nr = adapter->num_io_queues + adapter->xdp_num_queues;
+	int i, rc = 0;
+
+-	for (i = first_index; i < first_index + count; i++) {
++	for (i = 0; i < queues_nr; i++) {
+		rc = ena_setup_tx_resources(adapter, i);
+		if (rc)
+			goto err_setup_tx;
+@@ -███,31 +███,23 @@ int ena_setup_tx_resources_in_range(struct ena_adapter *adapter,
+		  "Tx queue %d: allocation failed\n", i);
+
+	/* rewind the index freeing the rings as we go */
+-	while (first_index < i--)
++	while (i--)
+		ena_free_tx_resources(adapter, i);
+	return rc;
+ }
+
+-void ena_free_all_io_tx_resources_in_range(struct ena_adapter *adapter,
+-					   int first_index, int count)
+-{
+-	int i;
+-
+-	for (i = first_index; i < first_index + count; i++)
+-		ena_free_tx_resources(adapter, i);
+-}
+-
+ /* ena_free_all_io_tx_resources - Free I/O Tx Resources for All Queues
+  * @adapter: board private structure
+  *
+  * Free all transmit software resources
+  */
+-void ena_free_all_io_tx_resources(struct ena_adapter *adapter)
++static void ena_free_all_io_tx_resources(struct ena_adapter *adapter)
+ {
+-	ena_free_all_io_tx_resources_in_range(adapter,
+-					      0,
+-					      adapter->xdp_num_queues +
+-					      adapter->num_io_queues);
++	u32 queues_nr = adapter->num_io_queues + adapter->xdp_num_queues;
++	int i;
++
++	for (i = 0; i < queues_nr; i++)
++		ena_free_tx_resources(adapter, i);
+ }
+
+ /* ena_setup_rx_resources - allocate I/O Rx resources (Descriptors)
+@@ -███,8 +███,8 @@ void ena_free_all_io_tx_resources(struct ena_adapter *adapter)
+ static int ena_setup_rx_resources(struct ena_adapter *adapter,
+				  u32 qid)
+ {
+-	struct ena_ring *rx_ring = &adapter->rx_ring[qid];
+	struct ena_irq *ena_irq = &adapter->irq_tbl[ENA_IO_IRQ_IDX(qid)];
++	struct ena_ring *rx_ring = &adapter->rx_ring[qid];
+	int size, node, i;
+
+	if (rx_ring->rx_buffer_info) {
+@@ -███,7 +███,7 @@ static int ena_alloc_rx_buffer(struct ena_ring *rx_ring,
+
+	/* We handle DMA here */
+	page = ena_lpc_get_page(rx_ring, &dma, &rx_info->is_lpc_page);
+-	if (unlikely(IS_ERR(page)))
++	if (IS_ERR(page))
+		return PTR_ERR(page);
+
+	netif_dbg(rx_ring->adapter, rx_status, rx_ring->netdev,
+@@ -███,8 +███,8 @@ static void ena_free_rx_page(struct ena_ring *rx_ring,
+ int ena_refill_rx_bufs(struct ena_ring *rx_ring, u32 num)
+ {
+	u16 next_to_use, req_id;
+-	u32 i;
+	int rc;
++	u32 i;
+
+	next_to_use = rx_ring->next_to_use;
+
+@@ -███,8 +███,7 @@ void ena_unmap_tx_buff(struct ena_ring *tx_ring,
+  */
+ static void ena_free_tx_bufs(struct ena_ring *tx_ring)
+ {
+-	bool print_once = true;
+-	bool is_xdp_ring;
++	bool is_xdp_ring, print_once = true;
+	u32 i;
+
+	is_xdp_ring = ENA_IS_XDP_INDEX(tx_ring->adapter, tx_ring->qid);
+@@ -███,49 +███,77 @@ static void ena_destroy_all_io_queues(struct ena_adapter *adapter)
+	ena_destroy_all_rx_queues(adapter);
+ }
+
++void ena_get_and_dump_head_rx_cdesc(struct ena_com_io_cq *io_cq)
++{
++	struct ena_eth_io_rx_cdesc_base *cdesc;
++
++	cdesc = ena_com_get_next_rx_cdesc(io_cq);
++	ena_com_dump_single_rx_cdesc(io_cq, cdesc);
++}
++
++void ena_get_and_dump_head_tx_cdesc(struct ena_com_io_cq *io_cq)
++{
++	struct ena_eth_io_tx_cdesc *cdesc;
++	u16 target_cdesc_idx;
++
++	target_cdesc_idx = io_cq->head & (io_cq->q_depth - 1);
++	cdesc = ena_com_tx_cdesc_idx_to_ptr(io_cq, target_cdesc_idx);
++	ena_com_dump_single_tx_cdesc(io_cq, cdesc);
++}
++
+ int handle_invalid_req_id(struct ena_ring *ring, u16 req_id,
+-			  struct ena_tx_buffer *tx_info, bool is_xdp)
++			  struct ena_tx_buffer *tx_info)
+ {
++	struct ena_adapter *adapter = ring->adapter;
++	char *queue_type;
++
++	if (ENA_IS_XDP_INDEX(adapter, ring->qid))
++		queue_type = "XDP";
++#ifdef ENA_AF_XDP_SUPPORT
++	else if (ENA_IS_XSK_RING(ring))
++		queue_type = "ZC queue";
++#endif
++	else
++		queue_type = "regular";
++
+	if (tx_info)
+-		netif_err(ring->adapter,
+-			  tx_done,
++		netif_err(adapter,
++			  tx_err,
+			  ring->netdev,
+-			  "tx_info doesn't have valid %s. qid %u req_id %u",
+-			   is_xdp ? "xdp frame" : "skb", ring->qid, req_id);
++			  "req id %u doesn't correspond to a packet. qid %u queue type: %s",
++			   ring->qid, req_id, queue_type);
+	else
+-		netif_err(ring->adapter,
+-			  tx_done,
++		netif_err(adapter,
++			  tx_err,
+			  ring->netdev,
+-			  "Invalid req_id %u in qid %u\n",
+-			  req_id, ring->qid);
++			  "Invalid req_id %u in qid %u, queue type: %s\n",
++			  req_id, ring->qid, queue_type);
+
++	ena_get_and_dump_head_tx_cdesc(ring->ena_com_io_cq);
+	ena_increase_stat(&ring->tx_stats.bad_req_id, 1, &ring->syncp);
+-	ena_reset_device(ring->adapter, ENA_REGS_RESET_INV_TX_REQ_ID);
++	ena_reset_device(adapter, ENA_REGS_RESET_INV_TX_REQ_ID);
+
+	return -EFAULT;
+ }
+
+-static int validate_tx_req_id(struct ena_ring *tx_ring, u16 req_id)
++int validate_tx_req_id(struct ena_ring *tx_ring, u16 req_id)
+ {
+	struct ena_tx_buffer *tx_info;
+
+	tx_info = &tx_ring->tx_buffer_info[req_id];
+-	if (likely(tx_info->skb))
++	if (likely(tx_info->total_tx_size))
+		return 0;
+
+-	return handle_invalid_req_id(tx_ring, req_id, tx_info, false);
++	return handle_invalid_req_id(tx_ring, req_id, tx_info);
+ }
+
+ static int ena_clean_tx_irq(struct ena_ring *tx_ring, u32 budget)
+ {
++	u32 total_done = 0, tx_bytes = 0;
++	u16 req_id, next_to_clean;
+	struct netdev_queue *txq;
++	int rc, tx_pkts = 0;
+	bool above_thresh;
+-	u32 tx_bytes = 0;
+-	u32 total_done = 0;
+-	u16 next_to_clean;
+-	u16 req_id;
+-	int tx_pkts = 0;
+-	int rc;
+
+	next_to_clean = tx_ring->next_to_clean;
+	txq = netdev_get_tx_queue(tx_ring->netdev, tx_ring->qid);
+@@ -███,12 +███,7 @@ static int ena_clean_tx_irq(struct ena_ring *tx_ring, u32 budget)
+		rc = ena_com_tx_comp_req_id_get(tx_ring->ena_com_io_cq,
+						&req_id);
+		if (rc) {
+-			if (unlikely(rc == -EINVAL))
+-				handle_invalid_req_id(tx_ring, req_id, NULL, false);
+-			else if (unlikely(rc == -EFAULT)) {
+-				ena_reset_device(tx_ring->adapter,
+-						 ENA_REGS_RESET_TX_DESCRIPTOR_MALFORMED);
+-			}
++			handle_tx_comp_poll_error(tx_ring, req_id, rc);
+			break;
+		}
+
+@@ -███,6 +███,7 @@ static int ena_clean_tx_irq(struct ena_ring *tx_ring, u32 budget)
+			  skb);
+
+		tx_bytes += tx_info->total_tx_size;
++		tx_info->total_tx_size = 0;
+		dev_kfree_skb(skb);
+		tx_pkts++;
+		total_done += tx_info->tx_descs;
+@@ -███,16 +███,14 @@ static struct sk_buff *ena_rx_skb(struct ena_ring *rx_ring,
+ {
+	int tailroom = SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	bool is_xdp_loaded = ena_xdp_present_ring(rx_ring);
++	int page_offset, pkt_offset, buf_offset;
++	u16 buf_len, len, req_id, buf = 0;
+	struct ena_rx_buffer *rx_info;
+	struct ena_adapter *adapter;
+-	int page_offset, pkt_offset;
+	dma_addr_t pre_reuse_paddr;
+-	u16 len, req_id, buf = 0;
+	bool reuse_rx_buf_page;
+	struct sk_buff *skb;
+	void *buf_addr;
+-	int buf_offset;
+-	u16 buf_len;
+ #ifndef ENA_LINEAR_FRAG_SUPPORTED
+	void *data_addr;
+	u16 hlen;
+@@ -███,7 +███,6 @@ static struct sk_buff *ena_rx_skb(struct ena_ring *rx_ring,
+		buf_len = ENA_PAGE_SIZE - page_offset;
+	}
+
+-
+	skb = ena_alloc_skb(rx_ring, buf_addr, buf_len);
+	if (unlikely(!skb))
+		return NULL;
+@@ -███,7 +███,6 @@ static struct sk_buff *ena_rx_skb(struct ena_ring *rx_ring,
+			buf_len = ENA_PAGE_SIZE - page_offset;
+		}
+
+-
+		skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags, rx_info->page,
+				page_offset + buf_offset, len, buf_len);
+
+@@ -███,26 +███,20 @@ static int ena_xdp_handle_buff(struct ena_ring *rx_ring, struct xdp_buff *xdp, u
+ static int ena_clean_rx_irq(struct ena_ring *rx_ring, struct napi_struct *napi,
+			    u32 budget)
+ {
++	int refill_threshold, refill_required, rx_copybreak_pkt = 0;
+	u16 next_to_clean = rx_ring->next_to_clean;
+	struct ena_com_rx_ctx ena_rx_ctx;
+	struct ena_rx_buffer *rx_info;
++	int i, rc = 0, total_len = 0;
+	struct ena_adapter *adapter;
+	u32 res_budget, work_done;
+-	int rx_copybreak_pkt = 0;
+-	int refill_threshold;
+	struct sk_buff *skb;
+-	int refill_required;
+ #ifdef ENA_XDP_SUPPORT
+	struct xdp_buff xdp;
+	int xdp_flags = 0;
+-#endif /* ENA_XDP_SUPPORT */
+-	int total_len = 0;
+-#ifdef ENA_XDP_SUPPORT
+	int xdp_verdict;
+ #endif /* ENA_XDP_SUPPORT */
+	u8 pkt_offset;
+-	int rc = 0;
+-	int i;
+
+	netif_dbg(rx_ring->adapter, rx_status, rx_ring->netdev,
+		  "%s qid %d\n", __func__, rx_ring->qid);
+@@ -███,6 +███,8 @@ static int ena_clean_rx_irq(struct ena_ring *rx_ring, struct napi_struct *napi,
+ #ifdef ENA_XDP_SUPPORT
+	if (xdp_flags & ENA_XDP_REDIRECT)
+		xdp_do_flush();
++	if (xdp_flags & ENA_XDP_TX)
++		ena_ring_tx_doorbell(rx_ring->xdp_ring);
+
+ #endif
+	adapter = netdev_priv(rx_ring->netdev);
+@@ -███,10 +███,12 @@ static int ena_clean_rx_irq(struct ena_ring *rx_ring, struct napi_struct *napi,
+		ena_increase_stat(&rx_ring->rx_stats.bad_desc_num, 1, &rx_ring->syncp);
+		ena_reset_device(adapter, ENA_REGS_RESET_TOO_MANY_RX_DESCS);
+	} else if (rc == -EFAULT) {
++		ena_get_and_dump_head_rx_cdesc(rx_ring->ena_com_io_cq);
+		ena_reset_device(adapter, ENA_REGS_RESET_RX_DESCRIPTOR_MALFORMED);
+	} else {
+		ena_increase_stat(&rx_ring->rx_stats.bad_req_id, 1,
+				  &rx_ring->syncp);
++		ena_get_and_dump_head_rx_cdesc(rx_ring->ena_com_io_cq);
+		ena_reset_device(adapter, ENA_REGS_RESET_INV_RX_REQ_ID);
+	}
+	return 0;
+@@ -███,8 +███,8 @@ static void ena_dim_work(struct work_struct *w)
+
+ static void ena_adjust_adaptive_rx_intr_moderation(struct ena_napi *ena_napi)
+ {
+-	struct dim_sample dim_sample;
+	struct ena_ring *rx_ring = ena_napi->rx_ring;
++	struct dim_sample dim_sample;
+
+	if (!rx_ring->per_napi_packets)
+		return;
+@@ -███,13 +███,9 @@ void ena_update_ring_numa_node(struct ena_ring *rx_ring)
+
+ static int ena_io_poll(struct napi_struct *napi, int budget)
+ {
++	int tx_work_done, tx_budget, ret, rx_work_done = 0, napi_comp_call = 0;
+	struct ena_napi *ena_napi = container_of(napi, struct ena_napi, napi);
+	struct ena_ring *tx_ring, *rx_ring;
+-	int tx_work_done;
+-	int rx_work_done = 0;
+-	int tx_budget;
+-	int napi_comp_call = 0;
+-	int ret;
+
+	tx_ring = ena_napi->tx_ring;
+	rx_ring = ena_napi->rx_ring;
+@@ -███,6 +███,28 @@ static int ena_rss_configure(struct ena_adapter *adapter)
+	return 0;
+ }
+
++/* Configure the Rx Flow Steering rules */
++static int ena_flow_steering_restore(struct ena_adapter *adapter, u16 flow_steering_max_entries)
++{
++	struct ena_com_dev *ena_dev = adapter->ena_dev;
++	int rc = 0;
++
++	/* In case the flow steering table wasn't initialized by probe */
++	if (!ena_dev->flow_steering.tbl_size) {
++		rc = ena_com_flow_steering_init(ena_dev, flow_steering_max_entries);
++		if (rc && (rc != -EOPNOTSUPP)) {
++			netif_err(adapter, ifup, adapter->netdev,
++				  "Failed to init Flow steering rules rc: %d\n", rc);
++			return rc;
++		}
++
++		/* No need to go further to rules restore if table just initialized */
++		return 0;
++	}
++
++	return ena_com_flow_steering_restore_device_rules(ena_dev);
++}
++
+ static int ena_up_complete(struct ena_adapter *adapter)
+ {
+	int rc;
+@@ -███,13 +███,13 @@ static int ena_create_io_tx_queue(struct ena_adapter *adapter, int qid)
+	return rc;
+ }
+
+-int ena_create_io_tx_queues_in_range(struct ena_adapter *adapter,
+-				     int first_index, int count)
++static int ena_create_all_io_tx_queues(struct ena_adapter *adapter)
+ {
++	u32 queues_nr = adapter->num_io_queues + adapter->xdp_num_queues;
+	struct ena_com_dev *ena_dev = adapter->ena_dev;
+	int rc, i;
+
+-	for (i = first_index; i < first_index + count; i++) {
++	for (i = 0; i < queues_nr; i++) {
+		rc = ena_create_io_tx_queue(adapter, i);
+		if (unlikely(rc))
+			goto create_err;
+@@ -███,7 +███,7 @@ int ena_create_io_tx_queues_in_range(struct ena_adapter *adapter,
+	return 0;
+
+ create_err:
+-	while (i-- > first_index)
++	while (i--)
+		ena_com_destroy_io_queue(ena_dev, ENA_IO_TXQ_IDX(i));
+
+	return rc;
+@@ -███,23 +███,11 @@ static int create_queues_with_size_backoff(struct ena_adapter *adapter)
+			  adapter->requested_rx_ring_size);
+
+	while (1) {
+-#ifdef ENA_XDP_SUPPORT
+-		if (ena_xdp_present(adapter)) {
+-			rc = ena_setup_and_create_all_xdp_queues(adapter);
+-
+-			if (rc)
+-				goto err_setup_tx;
+-		}
+-#endif /* ENA_XDP_SUPPORT */
+-		rc = ena_setup_tx_resources_in_range(adapter,
+-						     0,
+-						     adapter->num_io_queues);
++		rc = ena_setup_all_tx_resources(adapter);
+		if (rc)
+			goto err_setup_tx;
+
+-		rc = ena_create_io_tx_queues_in_range(adapter,
+-						      0,
+-						      adapter->num_io_queues);
++		rc = ena_create_all_io_tx_queues(adapter);
+		if (rc)
+			goto err_create_tx_queues;
+
+@@ -███,6 +███,13 @@ int ena_set_lpc_state(struct ena_adapter *adapter, bool enabled)
+	if (enabled == !!page_cache)
+		return 0;
+
++	/* If previously disabled via a module parameter (or not set),
++	 * override the configuration with a default value.
++	 */
++	if (!adapter->configured_lpc_size ||
++	    (adapter->configured_lpc_size == ENA_LPC_MULTIPLIER_NOT_CONFIGURED))
++		adapter->configured_lpc_size = ENA_LPC_DEFAULT_MULTIPLIER;
++
+	if (enabled && !ena_is_lpc_supported(adapter, adapter->rx_ring, true))
+		return -EOPNOTSUPP;
+
+@@ -███,8 +███,8 @@ static void ena_tx_csum(struct ena_com_tx_ctx *ena_tx_ctx,
+			struct sk_buff *skb,
+			bool disable_meta_caching)
+ {
+-	u32 mss = skb_shinfo(skb)->gso_size;
+	struct ena_com_tx_meta *ena_meta = &ena_tx_ctx->ena_meta;
++	u32 mss = skb_shinfo(skb)->gso_size;
+	u8 l4_protocol = 0;
+
+	if ((skb->ip_summed == CHECKSUM_PARTIAL) || mss) {
+@@ -███,11 +███,10 @@ static int ena_tx_map_skb(struct ena_ring *tx_ring,
+			  u16 *header_len)
+ {
+	struct ena_adapter *adapter = tx_ring->adapter;
++	u32 skb_head_len, frag_len, last_frag;
+	struct ena_com_buf *ena_buf;
++	u16 push_len = 0, delta = 0;
+	dma_addr_t dma;
+-	u32 skb_head_len, frag_len, last_frag;
+-	u16 push_len = 0;
+-	u16 delta = 0;
+	int i = 0;
+
+	skb_head_len = skb_headlen(skb);
+@@ -███,12 +███,12 @@ static int ena_tx_map_skb(struct ena_ring *tx_ring,
+ static netdev_tx_t ena_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ {
+	struct ena_adapter *adapter = netdev_priv(dev);
+-	struct ena_tx_buffer *tx_info;
++	u16 next_to_use, req_id, header_len;
+	struct ena_com_tx_ctx ena_tx_ctx;
++	struct ena_tx_buffer *tx_info;
+	struct ena_ring *tx_ring;
+	struct netdev_queue *txq;
+	void *push_hdr;
+-	u16 next_to_use, req_id, header_len;
+	int qid, rc;
+
+	netif_dbg(adapter, tx_queued, dev, "%s skb %p\n", __func__, skb);
+@@ -███,14 +███,28 @@ static netdev_tx_t ena_start_xmit(struct sk_buff *skb, struct net_device *dev)
+
+	rc = ena_check_and_linearize_skb(tx_ring, skb);
+	if (unlikely(rc))
++#ifdef ENA_AF_XDP_SUPPORT
++		goto error_drop_packet_skip_unlock;
++#else
+		goto error_drop_packet;
++#endif
+
++#ifdef ENA_AF_XDP_SUPPORT
++	if (unlikely(ENA_IS_XSK_RING(tx_ring))) {
++		spin_lock(&tx_ring->xdp_tx_lock);
++
++		if (unlikely(!ena_com_sq_have_enough_space(tx_ring->ena_com_io_sq,
++							   tx_ring->sgl_size + 2)))
++			goto error_drop_packet;
++	}
++
++#endif
+	next_to_use = tx_ring->next_to_use;
+	req_id = tx_ring->free_ids[next_to_use];
+	tx_info = &tx_ring->tx_buffer_info[req_id];
+	tx_info->num_of_bufs = 0;
+
+-	WARN(tx_info->skb, "SKB isn't NULL req_id %d\n", req_id);
++	WARN(tx_info->total_tx_size, "TX descriptor is still in use, req_iq = %d\n", req_id);
+
+	rc = ena_tx_map_skb(tx_ring, tx_info, skb, &push_hdr, &header_len);
+	if (unlikely(rc))
+@@ -███,6 +███,11 @@ static netdev_tx_t ena_start_xmit(struct sk_buff *skb, struct net_device *dev)
+	if (unlikely(rc))
+		goto error_unmap_dma;
+
++	u64_stats_update_begin(&tx_ring->syncp);
++	tx_ring->tx_stats.cnt++;
++	tx_ring->tx_stats.bytes += skb->len;
++	u64_stats_update_end(&tx_ring->syncp);
++
+	if (tx_ring->enable_bql)
+		netdev_tx_sent_queue(txq, skb->len);
+
+@@ -███,8 +███,14 @@ static netdev_tx_t ena_start_xmit(struct sk_buff *skb, struct net_device *dev)
+	 * to sgl_size + 2. one for the meta descriptor and one for header
+	 * (if the header is larger than tx_max_header_size).
+	 */
++#ifndef ENA_AF_XDP_SUPPORT
+	if (unlikely(!ena_com_sq_have_enough_space(tx_ring->ena_com_io_sq,
+						   tx_ring->sgl_size + 2))) {
++#else
++	if (unlikely(!ENA_IS_XSK_RING(tx_ring) &&
++		     !ena_com_sq_have_enough_space(tx_ring->ena_com_io_sq,
++						   tx_ring->sgl_size + 2))) {
++#endif
+		netif_dbg(adapter, tx_queued, dev, "%s stop queue %d\n",
+			  __func__, qid);
+
+@@ -███,6 +███,11 @@ static netdev_tx_t ena_start_xmit(struct sk_buff *skb, struct net_device *dev)
+		 */
+		ena_ring_tx_doorbell(tx_ring);
+
++#ifdef ENA_AF_XDP_SUPPORT
++	if (unlikely(ENA_IS_XSK_RING(tx_ring)))
++		spin_unlock(&tx_ring->xdp_tx_lock);
++
++#endif
+	return NETDEV_TX_OK;
+
+ error_unmap_dma:
+@@ -███,6 +███,12 @@ static netdev_tx_t ena_start_xmit(struct sk_buff *skb, struct net_device *dev)
+	tx_info->skb = NULL;
+
+ error_drop_packet:
++#ifdef ENA_AF_XDP_SUPPORT
++	if (unlikely(ENA_IS_XSK_RING(tx_ring)))
++		spin_unlock(&tx_ring->xdp_tx_lock);
++
++error_drop_packet_skip_unlock:
++#endif
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
+	if (!netdev_xmit_more() && ena_com_used_q_entries(tx_ring->ena_com_io_sq))
+ #else
+@@ -███,7 +███,6 @@ static netdev_tx_t ena_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ }
+
+ #ifdef HAVE_SET_RX_MODE
+-
+ /* Unicast, Multicast and Promiscuous mode set
+  * @netdev: network interface device structure
+  *
+@@ -███,12 +███,12 @@ static void ena_set_rx_mode(struct net_device *netdev)
+	} else {
+	}
+ }
+-#endif /* HAVE_SET_RX_MODE */
+
++#endif /* HAVE_SET_RX_MODE */
+ static void ena_config_host_info(struct ena_com_dev *ena_dev, struct pci_dev *pdev)
+ {
+-	struct device *dev = &pdev->dev;
+	struct ena_admin_host_info *host_info;
++	struct device *dev = &pdev->dev;
+	ssize_t ret;
+	int rc;
+
+@@ -███,14 +███,14 @@ static void ena_config_host_info(struct ena_com_dev *ena_dev, struct pci_dev *pd
+	host_info->os_type = ENA_ADMIN_OS_LINUX;
+	host_info->kernel_ver = LINUX_VERSION_CODE;
+	ret = strscpy(host_info->kernel_ver_str, utsname()->version,
+-		sizeof(host_info->kernel_ver_str));
++		      sizeof(host_info->kernel_ver_str));
+	if (ret < 0)
+		dev_dbg(dev,
+			"kernel version string will be truncated, status = %zd\n", ret);
+
+	host_info->os_dist = 0;
+	ret = strscpy(host_info->os_dist_str, utsname()->release,
+-		sizeof(host_info->os_dist_str));
++		      sizeof(host_info->os_dist_str));
+	if (ret < 0)
+		dev_dbg(dev,
+			"OS distribution string will be truncated, status = %zd\n", ret);
+@@ -███,9 +███,9 @@ static struct rtnl_link_stats64 *ena_get_stats64(struct net_device *netdev,
+ static struct net_device_stats *ena_get_stats(struct net_device *netdev)
+ {
+	struct ena_adapter *adapter = netdev_priv(netdev);
++	struct net_device_stats *stats = &netdev->stats;
+	struct ena_ring *rx_ring, *tx_ring;
+	unsigned long rx_drops;
+-	struct net_device_stats *stats = &netdev->stats;
+	unsigned int start;
+	int i;
+
+@@ -███,9 +███,11 @@ static int ena_busy_poll(struct napi_struct *napi)
+ {
+	struct ena_napi *ena_napi = container_of(napi, struct ena_napi, napi);
+	struct ena_ring *rx_ring = ena_napi->rx_ring;
+-	struct ena_adapter *adapter= rx_ring->adapter;
++	struct ena_adapter *adapter;
+	int done;
+
++	adapter = rx_ring->adapter;
++
+	if (!test_bit(ENA_FLAG_DEV_UP, &adapter->flags))
+		return LL_FLUSH_FAILED;
+
+@@ -███,7 +███,6 @@ static const struct net_device_ops ena_netdev_ops = {
+	.ndo_tx_timeout		= ena_find_and_timeout_queue,
+ #endif
+	.ndo_change_mtu		= ena_change_mtu,
+-	.ndo_set_mac_address	= NULL,
+ #ifdef	HAVE_SET_RX_MODE
+	.ndo_set_rx_mode	= ena_set_rx_mode,
+ #endif
+@@ -███,9 +███,9 @@ static const struct net_device_ops ena_netdev_ops = {
+ #ifdef ENA_XDP_SUPPORT
+	.ndo_bpf		= ena_xdp,
+	.ndo_xdp_xmit		= ena_xdp_xmit,
+-#if defined(ENA_TEST_AF_XDP) && defined(ENA_AF_XDP_SUPPORT)
++#ifdef ENA_AF_XDP_SUPPORT
+	.ndo_xsk_wakeup         = ena_xdp_xsk_wakeup,
+-#endif /* defined(ENA_TEST_AF_XDP) && defined(ENA_AF_XDP_SUPPORT) */
++#endif /* ENA_AF_XDP_SUPPORT */
+ #endif /* ENA_XDP_SUPPORT */
+ };
+
+@@ -███,10 +███,8 @@ static int ena_calc_io_queue_size(struct ena_adapter *adapter,
+				  struct ena_com_dev_get_features_ctx *get_feat_ctx)
+ {
+	struct ena_admin_feature_llq_desc *llq = &get_feat_ctx->llq;
++	u32 max_tx_queue_size, max_rx_queue_size, tx_queue_size;
+	struct ena_com_dev *ena_dev = adapter->ena_dev;
+-	u32 max_tx_queue_size;
+-	u32 max_rx_queue_size;
+-	u32 tx_queue_size;
+
+	/* If this function is called after driver load, the ring sizes have already
+	 * been configured. Take it into account when recalculating ring size.
+@@ -███,8 +███,8 @@ static int ena_set_queues_placement_policy(struct pci_dev *pdev,
+					   struct ena_admin_feature_llq_desc *llq,
+					   struct ena_llq_configurations *llq_default_configurations)
+ {
+-	int rc;
+	u32 llq_feature_mask;
++	int rc;
+
+	llq_feature_mask = 1 << ENA_ADMIN_LLQ;
+	if (!(ena_dev->supported_features & llq_feature_mask)) {
+@@ -███,9 +███,8 @@ static int ena_device_init(struct ena_adapter *adapter, struct pci_dev *pdev,
+	netdev_features_t prev_netdev_features;
+	struct device *dev = &pdev->dev;
+	bool readless_supported;
++	int dma_width, rc;
+	u32 aenq_groups;
+-	int dma_width;
+-	int rc;
+
+	rc = ena_com_mmio_reg_read_request_init(ena_dev);
+	if (unlikely(rc)) {
+@@ -███,7 +███,6 @@ static int ena_device_init(struct ena_adapter *adapter, struct pci_dev *pdev,
+	}
+ #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0) */
+
+-
+	/* ENA admin level init */
+	rc = ena_com_admin_init(ena_dev, &aenq_handlers);
+	if (unlikely(rc)) {
+@@ -███,7 +███,7 @@ static int ena_device_init(struct ena_adapter *adapter, struct pci_dev *pdev,
+
+	/* Turned on features shouldn't change due to reset. */
+	prev_netdev_features = adapter->netdev->features;
+-	ena_set_dev_offloads(get_feat_ctx, adapter->netdev);
++	ena_set_dev_offloads(get_feat_ctx, adapter);
+	adapter->netdev->features = prev_netdev_features;
+
+	rc = ena_phc_init(adapter);
+@@ -███,8 +███,8 @@ static int ena_enable_msix_and_set_admin_interrupts(struct ena_adapter *adapter)
+
+ int ena_destroy_device(struct ena_adapter *adapter, bool graceful)
+ {
+-	struct net_device *netdev = adapter->netdev;
+	struct ena_com_dev *ena_dev = adapter->ena_dev;
++	struct net_device *netdev = adapter->netdev;
+	bool dev_up;
+	int rc = 0;
+
+@@ -███,6 +███,12 @@ int ena_restore_device(struct ena_adapter *adapter)
+		goto err_device_destroy;
+	}
+
++	rc = ena_flow_steering_restore(adapter, get_feat_ctx.dev_attr.flow_steering_max_entries);
++	if (rc && (rc != -EOPNOTSUPP)) {
++		dev_err(&pdev->dev, "Failed to restore flow steering rules\n");
++		goto err_disable_msix;
++	}
++
+	/* If the interface was up before the reset bring it up */
+	if (adapter->dev_up_before_reset) {
+		rc = ena_up(adapter);
+@@ -███,7 +███,7 @@ static int check_for_rx_interrupt_queue(struct ena_adapter *adapter,
+			  "Potential MSIX issue on Rx side Queue = %d. Reset the device\n",
+			  rx_ring->qid);
+
+-		ena_reset_device(adapter, ENA_REGS_RESET_MISS_INTERRUPT);
++		ena_reset_device(adapter, ENA_REGS_RESET_MISS_FIRST_INTERRUPT);
+		return -EIO;
+	}
+
+@@ -███,6 +███,9 @@ static enum ena_regs_reset_reason_types check_cdesc_in_tx_cq(struct ena_adapter
+			  tx_ring->qid);
+
+		return ENA_REGS_RESET_MISS_TX_CMPL;
++	} else if (rc == -EFAULT) {
++		netif_err(adapter, tx_err, netdev, "Faulty descriptor found in CQ %d", tx_ring->qid);
++		ena_get_and_dump_head_tx_cdesc(tx_ring->ena_com_io_cq);
+	}
+
+	/* TX CQ has cdescs */
+@@ -███,16 +███,13 @@ static int check_missing_comp_in_tx_queue(struct ena_adapter *adapter, struct en
+	struct ena_napi *ena_napi = container_of(tx_ring->napi, struct ena_napi, napi);
+	enum ena_regs_reset_reason_types reset_reason = ENA_REGS_RESET_MISS_TX_CMPL;
+	u32 missed_tx_thresh = adapter->missing_tx_completion_threshold;
++	unsigned long jiffies_since_last_napi, jiffies_since_last_intr;
+	struct net_device *netdev = adapter->netdev;
+-	unsigned long jiffies_since_last_napi;
+-	unsigned long jiffies_since_last_intr;
++	unsigned long graceful_timeout, timeout;
+	u32 missed_tx = 0, new_missed_tx = 0;
+-	unsigned long graceful_timeout;
++	int napi_scheduled, i, rc = 0;
+	struct ena_tx_buffer *tx_buf;
+-	unsigned long timeout;
+-	int napi_scheduled;
+	bool is_expired;
+-	int i, rc = 0;
+
+	for (i = 0; i < tx_ring->ring_size; i++) {
+		tx_buf = &tx_ring->tx_buffer_info[i];
+@@ -███,7 +███,7 @@ static int check_missing_comp_in_tx_queue(struct ena_adapter *adapter, struct en
+			netif_err(adapter, tx_err, netdev,
+				  "Potential MSIX issue on Tx side Queue = %d. Reset the device\n",
+				  tx_ring->qid);
+-			ena_reset_device(adapter, ENA_REGS_RESET_MISS_INTERRUPT);
++			ena_reset_device(adapter, ENA_REGS_RESET_MISS_FIRST_INTERRUPT);
+			return -EIO;
+		}
+
+@@ -███,10 +███,9 @@ static int check_missing_comp_in_tx_queue(struct ena_adapter *adapter, struct en
+
+ static void check_for_missing_completions(struct ena_adapter *adapter)
+ {
++	int qid, budget, rc, io_queue_count;
+	struct ena_ring *tx_ring;
+	struct ena_ring *rx_ring;
+-	int qid, budget, rc;
+-	int io_queue_count;
+
+	io_queue_count = adapter->xdp_num_queues + adapter->num_io_queues;
+
+@@ -███,9 +███,9 @@ static void check_for_missing_completions(struct ena_adapter *adapter)
+	if (adapter->missing_tx_completion_to_jiffies == ENA_HW_HINTS_NO_TIMEOUT)
+		return;
+
+-	budget = min_t(u32, io_queue_count, ENA_MONITORED_TX_QUEUES);
++	budget = min_t(u32, io_queue_count, ENA_MONITORED_QUEUES);
+
+-	qid = adapter->last_monitored_tx_qid;
++	qid = adapter->last_monitored_qid;
+
+	while (budget) {
+		qid = (qid + 1) % io_queue_count;
+@@ -███,7 +███,7 @@ static void check_for_missing_completions(struct ena_adapter *adapter)
+		budget--;
+	}
+
+-	adapter->last_monitored_tx_qid = qid;
++	adapter->last_monitored_qid = qid;
+ }
+
+ /* trigger napi schedule after 2 consecutive detections */
+@@ -███,9 +███,9 @@ static void ena_update_host_info(struct ena_admin_host_info *host_info,
+				 struct net_device *netdev)
+ {
+	host_info->supported_network_features[0] =
+-		netdev->features & GENMASK_ULL(31, 0);
++		FIELD_GET(GENMASK_ULL(31, 0), netdev->features);
+	host_info->supported_network_features[1] =
+-		(netdev->features & GENMASK_ULL(63, 32)) >> 32;
++		FIELD_GET(GENMASK_ULL(63, 32), netdev->features);
+ }
+
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
+@@ -███,8 +███,9 @@ static u32 ena_calc_max_io_queue_num(struct pci_dev *pdev,
+ }
+
+ static void ena_set_dev_offloads(struct ena_com_dev_get_features_ctx *feat,
+-				 struct net_device *netdev)
++				 struct ena_adapter *adapter)
+ {
++	struct net_device *netdev = adapter->netdev;
+	netdev_features_t dev_features = 0;
+
+	/* Set offload features */
+@@ -███,6 +███,9 @@ static void ena_set_dev_offloads(struct ena_com_dev_get_features_ctx *feat,
+ #endif /* NETIF_F_RXHASH */
+		NETIF_F_HIGHDMA;
+
++	if (adapter->ena_dev->supported_features & BIT(ENA_ADMIN_FLOW_STEERING_CONFIG))
++		netdev->features |= NETIF_F_NTUPLE;
++
+ #ifdef HAVE_RHEL6_NET_DEVICE_OPS_EXT
+	do {
+		u32 hw_features = get_netdev_hw_features(netdev);
+@@ -███,7 +███,7 @@ static void ena_set_conf_feat_params(struct ena_adapter *adapter,
+	}
+
+	/* Set offload features */
+-	ena_set_dev_offloads(feat, netdev);
++	ena_set_dev_offloads(feat, adapter);
+
+	adapter->max_mtu = feat->dev_attr.max_mtu;
+ #ifdef HAVE_MTU_MIN_MAX_IN_NET_DEVICE
+@@ -███,6 +███,7 @@ static int ena_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+	}
+
+	adapter->llq_policy = ENA_LLQ_HEADER_SIZE_POLICY_UNSPECIFIED;
++
+	ena_set_forced_llq_size_policy(adapter);
+
+ #ifdef ENA_PHC_SUPPORT
+@@ -███,14 +███,21 @@ static int ena_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+
+	adapter->num_io_queues = clamp_val(num_io_queues, ENA_MIN_NUM_IO_QUEUES,
+					   max_num_io_queues);
+-	adapter->used_lpc_size = lpc_size;
+-	/* When LPC is enabled after driver load, the configured_lpc_size is
+-	 * used. Leaving it as 0, wouldn't change LPC state so we set it to
+-	 * different value
+-	 */
+-	adapter->configured_lpc_size = lpc_size ? : ENA_LPC_DEFAULT_MULTIPLIER;
++
++	if (lpc_size < ENA_LPC_MULTIPLIER_NOT_CONFIGURED) {
++		dev_warn(&pdev->dev,
++			 "A negative lpc_size (%d) is not supported, treating as unspecified\n",
++			 lpc_size);
++		lpc_size = ENA_LPC_MULTIPLIER_NOT_CONFIGURED;
++	}
++
++	adapter->configured_lpc_size = lpc_size;
++
++	adapter->used_lpc_size = lpc_size != ENA_LPC_MULTIPLIER_NOT_CONFIGURED ? lpc_size :
++				 ENA_LPC_DEFAULT_MULTIPLIER;
++
+	adapter->max_num_io_queues = max_num_io_queues;
+-	adapter->last_monitored_tx_qid = 0;
++	adapter->last_monitored_qid = 0;
+
+	adapter->xdp_first_ring = 0;
+	adapter->xdp_num_queues = 0;
+@@ -███,9 +███,16 @@ static int ena_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+
+	ena_config_debug_area(adapter);
+
++	rc = ena_com_flow_steering_init(ena_dev, get_feat_ctx.dev_attr.flow_steering_max_entries);
++	if (rc && (rc != -EOPNOTSUPP)) {
++		dev_err(&pdev->dev, "Cannot init Flow steering rules rc: %d\n", rc);
++		goto err_rss;
++	}
++
+ #ifdef ENA_XDP_NETLINK_ADVERTISEMENT
+	if (ena_xdp_legal_queue_count(adapter, adapter->num_io_queues))
+		netdev->xdp_features = ENA_XDP_FEATURES;
++
+ #endif
+	memcpy(adapter->netdev->perm_addr, adapter->mac_addr, netdev->addr_len);
+
+@@ -███,7 +███,7 @@ static int ena_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+	rc = register_netdev(netdev);
+	if (rc) {
+		dev_err(&pdev->dev, "Cannot register net device\n");
+-		goto err_rss;
++		goto err_flow_steering;
+	}
+
+	INIT_WORK(&adapter->reset_task, ena_fw_reset_device);
+@@ -███,6 +███,8 @@ static int ena_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+
+	return 0;
+
++err_flow_steering:
++	ena_com_flow_steering_destroy(ena_dev);
+ err_rss:
+	ena_com_delete_debug_area(ena_dev);
+	ena_com_rss_destroy(ena_dev);
+@@ -███,6 +███,8 @@ static void __ena_shutoff(struct pci_dev *pdev, bool shutdown)
+
+	ena_com_rss_destroy(ena_dev);
+
++	ena_com_flow_steering_destroy(ena_dev);
++
+	ena_com_delete_debug_area(ena_dev);
+
+	ena_com_delete_host_info(ena_dev);
+@@ -███,9 +███,7 @@ static void ena_keep_alive_wd(void *adapter_data,
+ {
+	struct ena_adapter *adapter = (struct ena_adapter *)adapter_data;
+	struct ena_admin_aenq_keep_alive_desc *desc;
+-	u64 rx_overruns;
+-	u64 rx_drops;
+-	u64 tx_drops;
++	u64 rx_overruns, rx_drops, tx_drops;
+
+	desc = (struct ena_admin_aenq_keep_alive_desc *)aenq_e;
+	adapter->last_keep_alive_jiffies = jiffies;
+@@ -███,7 +███,6 @@ static void ena_refresh_fw_capabilites(void *adapter_data,
+	set_bit(ENA_FLAG_TRIGGER_RESET, &adapter->flags);
+ }
+
+-
+ static void ena_conf_notification(void *adapter_data,
+				  struct ena_admin_aenq_entry *aenq_e)
+ {
+diff --git a/drivers/amazon/net/ena/ena_netdev.h b/drivers/amazon/net/ena/ena_netdev.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_netdev.h
++++ b/drivers/amazon/net/ena/ena_netdev.h
+@@ -███,6 +███,6 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #ifndef ENA_H
+@@ -███,8 +███,8 @@
+ #include "ena_eth_com.h"
+
+ #define DRV_MODULE_GEN_MAJOR	2
+-#define DRV_MODULE_GEN_MINOR	12
+-#define DRV_MODULE_GEN_SUBMINOR	3
++#define DRV_MODULE_GEN_MINOR	13
++#define DRV_MODULE_GEN_SUBMINOR	0
+
+ #define DRV_MODULE_NAME		"ena"
+ #ifndef DRV_MODULE_GENERATION
+@@ -███,8 +███,8 @@
+ #define ENA_RX_REFILL_THRESH_DIVIDER	8
+ #define ENA_RX_REFILL_THRESH_PACKET	256
+
+-/* Number of queues to check for missing queues per timer service */
+-#define ENA_MONITORED_TX_QUEUES	4
++/* Number of queues to check for missing completions / interrupts per timer service */
++#define ENA_MONITORED_QUEUES	4
+ /* Max timeout packets before device reset */
+ #define MAX_NUM_OF_TIMEOUTED_PACKETS 128
+
+@@ -███,6 +███,12 @@ struct ena_tx_buffer {
+
+	/* Used for detect missing tx packets to limit the number of prints */
+	u8 print_once;
++#ifdef ENA_AF_XDP_SUPPORT
++
++	/* used for ordering TX completions when needed (e.g. AF_XDP) */
++	u8 acked;
++
++#endif
+	/* Save the last jiffies to detect missing tx packets
+	 *
+	 * sets to non zero value on ena_start_xmit and set to zero on
+@@ -███,6 +███,8 @@ struct ena_stats_tx {
+	u64 unmask_interrupt;
+	u64 last_napi_jiffies;
+ #ifdef ENA_AF_XDP_SUPPORT
++	u64 xsk_cnt;
++	u64 xsk_bytes;
+	u64 xsk_need_wakeup_set;
+	u64 xsk_wakeup_request;
+ #endif /* ENA_AF_XDP_SUPPORT */
+@@ -███,6 +███,7 @@ struct ena_stats_dev {
+	u64 missing_admin_interrupt;
+	u64 admin_to;
+	u64 device_request_reset;
++	u64 missing_first_intr;
+ };
+
+ enum ena_flags_t {
+@@ -███,8 +███,8 @@ struct ena_adapter {
+	struct ena_admin_eni_stats eni_stats;
+	struct ena_admin_ena_srd_info ena_srd_info;
+
+-	/* last queue index that was checked for uncompleted tx packets */
+-	u32 last_monitored_tx_qid;
++	/* last queue index that was checked for missing completions / interrupts */
++	u32 last_monitored_qid;
+
+	enum ena_regs_reset_reason_types reset_reason;
+
+@@ -███,6 +███,7 @@ static const struct ena_reset_stats_offset resets_to_stats_offset_map[ENA_REGS_R
+	ENA_RESET_STATS_ENTRY(ENA_REGS_RESET_TX_DESCRIPTOR_MALFORMED, tx_desc_malformed),
+	ENA_RESET_STATS_ENTRY(ENA_REGS_RESET_MISSING_ADMIN_INTERRUPT, missing_admin_interrupt),
+	ENA_RESET_STATS_ENTRY(ENA_REGS_RESET_DEVICE_REQUEST, device_request_reset),
++	ENA_RESET_STATS_ENTRY(ENA_REGS_RESET_MISS_FIRST_INTERRUPT, missing_first_intr),
+ };
+
+ void ena_set_ethtool_ops(struct net_device *netdev);
+@@ -███,7 +███,6 @@ void ena_dump_stats_to_dmesg(struct ena_adapter *adapter);
+
+ void ena_dump_stats_to_buf(struct ena_adapter *adapter, u8 *buf);
+
+-
+ int ena_set_lpc_state(struct ena_adapter *adapter, bool enabled);
+
+ int ena_update_queue_params(struct ena_adapter *adapter,
+@@ -███,8 +███,11 @@ struct page *ena_alloc_map_page(struct ena_ring *rx_ring, dma_addr_t *dma);
+
+ int ena_destroy_device(struct ena_adapter *adapter, bool graceful);
+ int ena_restore_device(struct ena_adapter *adapter);
++void ena_get_and_dump_head_tx_cdesc(struct ena_com_io_cq *io_cq);
++void ena_get_and_dump_head_rx_cdesc(struct ena_com_io_cq *io_cq);
+ int handle_invalid_req_id(struct ena_ring *ring, u16 req_id,
+-			  struct ena_tx_buffer *tx_info, bool is_xdp);
++			  struct ena_tx_buffer *tx_info);
++int validate_tx_req_id(struct ena_ring *tx_ring, u16 req_id);
+
+ static inline void ena_ring_tx_doorbell(struct ena_ring *tx_ring)
+ {
+@@ -███,13 +███,6 @@ void ena_unmap_tx_buff(struct ena_ring *tx_ring,
+		       struct ena_tx_buffer *tx_info);
+ void ena_init_io_rings(struct ena_adapter *adapter,
+		       int first_index, int count);
+-int ena_create_io_tx_queues_in_range(struct ena_adapter *adapter,
+-				     int first_index, int count);
+-int ena_setup_tx_resources_in_range(struct ena_adapter *adapter,
+-				    int first_index, int count);
+-void ena_free_all_io_tx_resources_in_range(struct ena_adapter *adapter,
+-					   int first_index, int count);
+-void ena_free_all_io_tx_resources(struct ena_adapter *adapter);
+ void ena_down(struct ena_adapter *adapter);
+ int ena_up(struct ena_adapter *adapter);
+ void ena_unmask_interrupt(struct ena_ring *tx_ring, struct ena_ring *rx_ring);
+@@ -███,4 +███,16 @@ void ena_set_rx_hash(struct ena_ring *rx_ring,
+		     struct ena_com_rx_ctx *ena_rx_ctx,
+		     struct sk_buff *skb);
+ int ena_refill_rx_bufs(struct ena_ring *rx_ring, u32 num);
++
++static inline void handle_tx_comp_poll_error(struct ena_ring *tx_ring, u16 req_id, int rc)
++{
++	if (unlikely(rc == -EINVAL))
++		handle_invalid_req_id(tx_ring, req_id, NULL);
++	else if (unlikely(rc == -EFAULT)) {
++		ena_get_and_dump_head_tx_cdesc(tx_ring->ena_com_io_cq);
++		ena_reset_device(tx_ring->adapter,
++				 ENA_REGS_RESET_TX_DESCRIPTOR_MALFORMED);
++	}
++}
++
+ #endif /* !(ENA_H) */
+diff --git a/drivers/amazon/net/ena/ena_pci_id_tbl.h b/drivers/amazon/net/ena/ena_pci_id_tbl.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_pci_id_tbl.h
++++ b/drivers/amazon/net/ena/ena_pci_id_tbl.h
+@@ -███,6 +███,6 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #ifndef ENA_PCI_ID_TBL_H_
+diff --git a/drivers/amazon/net/ena/ena_phc.c b/drivers/amazon/net/ena/ena_phc.c
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_phc.c
++++ b/drivers/amazon/net/ena/ena_phc.c
+@@ -███,6 +███,6 @@
+ // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
+-/*
+- * Copyright 2015-2022 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #include <linux/pci.h>
+@@ -███,8 +███,8 @@ static int ena_phc_adjfreq(struct ptp_clock_info *clock_info, s32 ppb)
+ {
+	return -EOPNOTSUPP;
+ }
+-#endif /* ENA_PHC_SUPPORT_ADJFREQ */
+
++#endif /* ENA_PHC_SUPPORT_ADJFREQ */
+ static int ena_phc_adjtime(struct ptp_clock_info *clock_info, s64 delta)
+ {
+	return -EOPNOTSUPP;
+@@ -███,7 +███,6 @@ static int ena_phc_settime(struct ptp_clock_info *clock_info, const struct times
+ }
+
+ #endif /* ENA_PHC_SUPPORT_GETTIME64 */
+-
+ static struct ptp_clock_info ena_ptp_clock_info = {
+	.owner		= THIS_MODULE,
+	.n_alarm	= 0,
+diff --git a/drivers/amazon/net/ena/ena_phc.h b/drivers/amazon/net/ena/ena_phc.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_phc.h
++++ b/drivers/amazon/net/ena/ena_phc.h
+@@ -███,13 +███,12 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2022 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #ifndef ENA_PHC_H
+ #define ENA_PHC_H
+
+ #ifdef ENA_PHC_SUPPORT
+-
+ #include <linux/ptp_clock_kernel.h>
+
+ struct ena_phc_info {
+diff --git a/drivers/amazon/net/ena/ena_regs_defs.h b/drivers/amazon/net/ena/ena_regs_defs.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_regs_defs.h
++++ b/drivers/amazon/net/ena/ena_regs_defs.h
+@@ -███,7 +███,8 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
++
+ #ifndef _ENA_REGS_H_
+ #define _ENA_REGS_H_
+
+@@ -███,6 +███,7 @@ enum ena_regs_reset_reason_types {
+	ENA_REGS_RESET_TX_DESCRIPTOR_MALFORMED	    = 17,
+	ENA_REGS_RESET_MISSING_ADMIN_INTERRUPT      = 18,
+	ENA_REGS_RESET_DEVICE_REQUEST               = 19,
++	ENA_REGS_RESET_MISS_FIRST_INTERRUPT         = 20,
+	ENA_REGS_RESET_LAST,
+ };
+
+diff --git a/drivers/amazon/net/ena/ena_sysfs.c b/drivers/amazon/net/ena/ena_sysfs.c
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_sysfs.c
++++ b/drivers/amazon/net/ena/ena_sysfs.c
+@@ -███,6 +███,6 @@
+ // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #include <linux/device.h>
+@@ -███,7 +███,6 @@
+ #endif /* ENA_PHC_SUPPORT */
+ #include "ena_sysfs.h"
+
+-
+ static ssize_t ena_store_rx_copybreak(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t len)
+@@ -███,8 +███,9 @@ int ena_sysfs_init(struct device *dev)
+		dev_err(dev, "Failed to create rx_copybreak sysfs entry");
+
+ #ifdef ENA_PHC_SUPPORT
+-	if (device_create_file(dev, &dev_attr_phc_error_bound))
+-		dev_err(dev, "Failed to create phc_error_bound sysfs entry");
++	if (ena_phc_is_active(dev_get_drvdata(dev)))
++		if (device_create_file(dev, &dev_attr_phc_error_bound))
++			dev_err(dev, "Failed to create phc_error_bound sysfs entry");
+
+ #endif /* ENA_PHC_SUPPORT */
+
+diff --git a/drivers/amazon/net/ena/ena_sysfs.h b/drivers/amazon/net/ena/ena_sysfs.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_sysfs.h
++++ b/drivers/amazon/net/ena/ena_sysfs.h
+@@ -███,6 +███,6 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #ifndef __ENA_SYSFS_H__
+diff --git a/drivers/amazon/net/ena/ena_xdp.c b/drivers/amazon/net/ena/ena_xdp.c
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_xdp.c
++++ b/drivers/amazon/net/ena/ena_xdp.c
+@@ -███,26 +███,11 @@
+ // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
+-/*
+- * Copyright 2015-2021 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #include "ena_xdp.h"
+ #ifdef ENA_XDP_SUPPORT
+
+-static int validate_xdp_req_id(struct ena_ring *tx_ring, u16 req_id)
+-{
+-	struct ena_tx_buffer *tx_info;
+-
+-	tx_info = &tx_ring->tx_buffer_info[req_id];
+-#ifdef ENA_AF_XDP_SUPPORT
+-	if (likely(tx_info->total_tx_size))
+-#else
+-	if (likely(tx_info->xdpf))
+-#endif
+-		return 0;
+-
+-	return handle_invalid_req_id(tx_ring, req_id, tx_info, true);
+-}
+-
+ static int ena_xdp_tx_map_frame(struct ena_ring *tx_ring,
+				struct ena_tx_buffer *tx_info,
+				struct xdp_frame *xdpf,
+@@ -███,6 +███,11 @@ int ena_xdp_xmit_frame(struct ena_ring *tx_ring,
+	if (rc)
+		goto error_unmap_dma;
+
++	u64_stats_update_begin(&tx_ring->syncp);
++	tx_ring->tx_stats.cnt++;
++	tx_ring->tx_stats.bytes += xdpf->len;
++	u64_stats_update_end(&tx_ring->syncp);
++
+	return rc;
+
+ error_unmap_dma:
+@@ -███,28 +███,6 @@ static void ena_init_all_xdp_queues(struct ena_adapter *adapter)
+			  adapter->xdp_num_queues);
+ }
+
+-int ena_setup_and_create_all_xdp_queues(struct ena_adapter *adapter)
+-{
+-	u32 xdp_first_ring = adapter->xdp_first_ring;
+-	u32 xdp_num_queues = adapter->xdp_num_queues;
+-	int rc = 0;
+-
+-	rc = ena_setup_tx_resources_in_range(adapter, xdp_first_ring, xdp_num_queues);
+-	if (rc)
+-		goto setup_err;
+-
+-	rc = ena_create_io_tx_queues_in_range(adapter, xdp_first_ring, xdp_num_queues);
+-	if (rc)
+-		goto create_err;
+-
+-	return 0;
+-
+-create_err:
+-	ena_free_all_io_tx_resources_in_range(adapter, xdp_first_ring, xdp_num_queues);
+-setup_err:
+-	return rc;
+-}
+-
+ /* Provides a way for both kernel and bpf-prog to know
+  * more about the RX-queue a given XDP frame arrived on.
+  */
+@@ -███,13 +███,13 @@ void ena_xdp_unregister_rxq_info(struct ena_ring *rx_ring)
+
+ void ena_xdp_exchange_program_rx_in_range(struct ena_adapter *adapter,
+					  struct bpf_prog *prog,
+-					  int first, int count)
++					  int first, int last)
+ {
+	struct bpf_prog *old_bpf_prog;
+	struct ena_ring *rx_ring;
+	int i = 0;
+
+-	for (i = first; i < count; i++) {
++	for (i = first; i < last; i++) {
+		rx_ring = &adapter->rx_ring[i];
+		old_bpf_prog = xchg(&rx_ring->xdp_bpf_prog, prog);
+
+@@ -███,28 +███,61 @@ static int ena_xdp_set(struct net_device *netdev, struct netdev_bpf *bpf)
+ }
+
+ #ifdef ENA_AF_XDP_SUPPORT
+-static bool ena_is_xsk_pool_params_allowed(struct xsk_buff_pool *pool)
++static bool ena_can_queue_have_xsk_pool(struct ena_adapter *adapter, u16 qid)
+ {
+-	return xsk_pool_get_headroom(pool) == 0 &&
+-	       xsk_pool_get_chunk_size(pool) == ENA_PAGE_SIZE;
++	if (2 * qid >= adapter->max_num_io_queues) {
++		u32 max_queue_id = min_t(u32, adapter->max_num_io_queues,
++					 adapter->num_io_queues);
++		netdev_err(adapter->netdev,
++			   "UMEM can be set for qid [%d, %d], received %d",
++			   0, max_queue_id - 1, qid);
++
++		return false;
++	}
++
++	if (qid > adapter->num_io_queues) {
++		netdev_err(adapter->netdev,
++			   "UMEM queue id %d is higher than number of queues",
++			   qid);
++
++		return false;
++	}
++
++	return true;
++}
++
++static bool ena_is_xsk_pool_params_allowed(struct ena_adapter *adapter,
++					   struct xsk_buff_pool *pool)
++{
++	if (xsk_pool_get_headroom(pool) > XDP_PACKET_HEADROOM) {
++		netdev_err(adapter->netdev,
++			   "Adding additional headroom to pool is not supported");
++
++		return false;
++	}
++
++	if (xsk_pool_get_chunk_size(pool) != ENA_PAGE_SIZE) {
++		netdev_err(adapter->netdev, "Only page size chunks are supported");
++
++		return false;
++	}
++
++	return true;
+ }
+
+ static int ena_xsk_pool_enable(struct ena_adapter *adapter,
+-			       struct xsk_buff_pool *pool,
+-			       u16 qid)
++			       struct netdev_bpf *bpf)
+ {
++	struct xsk_buff_pool *pool = bpf->xsk.pool;
+	struct ena_ring *rx_ring, *tx_ring;
++	u16 qid = bpf->xsk.queue_id;
+	bool dev_was_up = false;
+	int err;
+
+-	if (qid >= adapter->num_io_queues) {
+-		netdev_err(adapter->netdev,
+-			   "Max qid for XSK pool is %d (received %d)\n",
+-			   adapter->num_io_queues, qid);
++	if (!ena_can_queue_have_xsk_pool(adapter, qid))
+		return -EINVAL;
+-	}
+
+-	if (ena_is_xsk_pool_params_allowed(pool))
++	if (!ena_is_xsk_pool_params_allowed(adapter, pool))
+		return -EINVAL;
+
+	rx_ring = &adapter->rx_ring[qid];
+@@ -███,8 +███,10 @@ static int ena_xsk_pool_enable(struct ena_adapter *adapter,
+	if (err) {
+		ena_increase_stat(&rx_ring->rx_stats.dma_mapping_err, 1,
+				  &rx_ring->syncp);
++
+		netif_err(adapter, drv, adapter->netdev,
+			  "Failed to DMA map XSK pool for qid %d\n", qid);
++
+		return err;
+	}
+
+@@ -███,9 +███,10 @@ static int ena_xsk_pool_enable(struct ena_adapter *adapter,
+ }
+
+ static int ena_xsk_pool_disable(struct ena_adapter *adapter,
+-				u16 qid)
++				struct netdev_bpf *bpf)
+ {
+	struct ena_ring *rx_ring, *tx_ring;
++	u16 qid = bpf->xsk.queue_id;
+	bool dev_was_up = false;
+
+	if (qid >= adapter->num_io_queues)
+@@ -███,11 +███,10 @@ static int ena_xsk_pool_disable(struct ena_adapter *adapter,
+ }
+
+ static int ena_xsk_pool_setup(struct ena_adapter *adapter,
+-			      struct xsk_buff_pool *pool,
+-			      u16 qid)
++			      struct netdev_bpf *bpf)
+ {
+-	return pool ? ena_xsk_pool_enable(adapter, pool, qid) :
+-		      ena_xsk_pool_disable(adapter, qid);
++	return bpf->xsk.pool ? ena_xsk_pool_enable(adapter, bpf) :
++			       ena_xsk_pool_disable(adapter, bpf);
+ }
+
+ #endif /* ENA_AF_XDP_SUPPORT */
+@@ -███,7 +███,7 @@ int ena_xdp(struct net_device *netdev, struct netdev_bpf *bpf)
+		return ena_xdp_set(netdev, bpf);
+ #ifdef ENA_AF_XDP_SUPPORT
+	case XDP_SETUP_XSK_POOL:
+-		return ena_xsk_pool_setup(adapter, bpf->xsk.pool, bpf->xsk.queue_id);
++		return ena_xsk_pool_setup(adapter, bpf);
+ #endif /* ENA_AF_XDP_SUPPORT */
+ #ifdef ENA_XDP_QUERY_IN_DRIVER
+	case XDP_QUERY_PROG:
+@@ -███,7 +███,12 @@ int ena_xdp_xsk_wakeup(struct net_device *netdev, u32 qid, u32 flags)
+
+	napi = tx_ring->napi;
+
+-	napi_schedule(napi);
++	if (!napi_if_scheduled_mark_missed(napi)) {
++		/* Call local_bh_enable to trigger SoftIRQ processing */
++		local_bh_disable();
++		napi_schedule(napi);
++		local_bh_enable();
++	}
+
+	return 0;
+ }
+@@ -███,14 +███,9 @@ int ena_xdp_xsk_wakeup(struct net_device *netdev, u32 qid, u32 flags)
+ #endif /* ENA_AF_XDP_SUPPORT */
+ static int ena_clean_xdp_irq(struct ena_ring *tx_ring, u32 budget)
+ {
+-#ifdef ENA_AF_XDP_SUPPORT
+-	bool is_zc_q = ENA_IS_XSK_RING(tx_ring);
+-#endif /* ENA_AF_XDP_SUPPORT */
++	u16 next_to_clean, req_id;
++	int rc, tx_pkts = 0;
+	u32 total_done = 0;
+-	u16 next_to_clean;
+-	int tx_pkts = 0;
+-	u16 req_id;
+-	int rc;
+
+	next_to_clean = tx_ring->next_to_clean;
+
+@@ -███,42 +███,27 @@ static int ena_clean_xdp_irq(struct ena_ring *tx_ring, u32 budget)
+		rc = ena_com_tx_comp_req_id_get(tx_ring->ena_com_io_cq,
+						&req_id);
+		if (rc) {
+-			if (unlikely(rc == -EINVAL))
+-				handle_invalid_req_id(tx_ring, req_id, NULL, true);
+-			else if (unlikely(rc == -EFAULT)) {
+-				ena_reset_device(tx_ring->adapter,
+-						 ENA_REGS_RESET_TX_DESCRIPTOR_MALFORMED);
+-			}
++			handle_tx_comp_poll_error(tx_ring, req_id, rc);
+			break;
+		}
+
+		/* validate that the request id points to a valid xdp_frame */
+-		rc = validate_xdp_req_id(tx_ring, req_id);
++		rc = validate_tx_req_id(tx_ring, req_id);
+		if (rc)
+			break;
+
+		tx_info = &tx_ring->tx_buffer_info[req_id];
+
+		tx_info->tx_sent_jiffies = 0;
+-#ifdef ENA_AF_XDP_SUPPORT
+-
+-		if (is_zc_q)
+-			goto log_xdp_packet;
+-#endif /* ENA_AF_XDP_SUPPORT */
+
+		xdpf = tx_info->xdpf;
+		tx_info->xdpf = NULL;
+		ena_unmap_tx_buff(tx_ring, tx_info);
+		xdp_return_frame(xdpf);
+
+-#ifdef ENA_AF_XDP_SUPPORT
+-log_xdp_packet:
+-#endif /* ENA_AF_XDP_SUPPORT */
+		tx_pkts++;
+		total_done += tx_info->tx_descs;
+-#ifdef ENA_AF_XDP_SUPPORT
+		tx_info->total_tx_size = 0;
+-#endif /* ENA_AF_XDP_SUPPORT */
+		tx_ring->free_ids[next_to_clean] = req_id;
+		next_to_clean = ENA_TX_RING_IDX_NEXT(next_to_clean,
+						     tx_ring->ring_size);
+@@ -███,27 +███,99 @@ static int ena_clean_xdp_irq(struct ena_ring *tx_ring, u32 budget)
+		  "tx_poll: q %d done. total pkts: %d\n",
+		  tx_ring->qid, tx_pkts);
+
++	return tx_pkts;
++}
++
+ #ifdef ENA_AF_XDP_SUPPORT
+-	if (is_zc_q) {
+-		struct xsk_buff_pool *xsk_pool = tx_ring->xsk_pool;
+-
+-		if (tx_pkts)
+-			xsk_tx_completed(xsk_pool, tx_pkts);
+-
+-		if (xsk_uses_need_wakeup(xsk_pool)) {
+-			bool needs_wakeup = tx_pkts < budget;
+-			if (needs_wakeup)
+-				xsk_set_tx_need_wakeup(xsk_pool);
+-			else
+-				xsk_clear_tx_need_wakeup(xsk_pool);
++/* Poll TX completions. Completions can be either for TX packets sent by
++ * an AF XDP application or the network stack (through .ndo_start_xmit)
++ */
++static bool ena_xdp_clean_tx_zc(struct ena_ring *tx_ring, u32 budget)
++{
++	struct xsk_buff_pool *xsk_pool = tx_ring->xsk_pool;
++	int rc, cleaned_pkts, zc_pkts, acked_pkts;
++	struct ena_tx_buffer *tx_info;
++	u32 total_done;
++	u16 req_id;
++
++	acked_pkts = 0;
++
++	while (acked_pkts < budget) {
++		rc = ena_com_tx_comp_req_id_get(tx_ring->ena_com_io_cq,
++						&req_id);
++		if (rc) {
++			handle_tx_comp_poll_error(tx_ring, req_id, rc);
++			break;
+		}
++
++		/* validate that the request id points to a valid packet */
++		rc = validate_tx_req_id(tx_ring, req_id);
++		if (unlikely(rc))
++			break;
++
++		tx_info = &tx_ring->tx_buffer_info[req_id];
++
++		tx_info->tx_sent_jiffies = 0;
++
++		tx_info->acked = 1;
++
++		acked_pkts++;
+	}
+
+-#endif /* ENA_AF_XDP_SUPPORT */
+-	return tx_pkts;
++	/* AF XDP expects the completions to be ordered but HW doesn't guarantee
++	 * this. Force ordering.
++	 */
++	total_done = 0;
++	cleaned_pkts = zc_pkts = 0;
++	req_id = tx_ring->next_to_clean;
++	while (true) {
++		bool is_zc_pkt;
++
++		tx_info = &tx_ring->tx_buffer_info[req_id];
++		if (!tx_info->acked)
++			break;
++
++		/* Used as a sanity check to signify that the packet is
++		 * in-flight.
++		 */
++		tx_info->total_tx_size = 0;
++
++		is_zc_pkt = !tx_info->skb;
++
++		cleaned_pkts++;
++		zc_pkts += is_zc_pkt;
++		total_done += tx_info->tx_descs;
++
++		if (!is_zc_pkt) {
++			struct sk_buff *skb = tx_info->skb;
++
++			ena_unmap_tx_buff(tx_ring, tx_info);
++
++			/* prefetch skb_end_pointer() to speedup skb_shinfo(skb) */
++			prefetch(&skb->end);
++			dev_kfree_skb(skb);
++			tx_info->skb = NULL;
++		}
++
++		/* This ensures that this loop will stop */
++		tx_info->acked = 0;
++		req_id = ENA_TX_RING_IDX_NEXT(req_id, tx_ring->ring_size);
++
++		netif_dbg(tx_ring->adapter, tx_done, tx_ring->netdev,
++			  "ZC tx_poll: q %d pkt #%d req_id %d, ZC packet: %d\n",
++			  tx_ring->qid, cleaned_pkts, req_id, is_zc_pkt);
++	}
++
++	tx_ring->next_to_clean = req_id;
++
++	ena_com_comp_ack(tx_ring->ena_com_io_sq, total_done);
++
++	if (zc_pkts)
++		xsk_tx_completed(xsk_pool, zc_pkts);
++
++	return acked_pkts < budget;
+ }
+
+-#ifdef ENA_AF_XDP_SUPPORT
+ static bool ena_xdp_xmit_irq_zc(struct ena_ring *tx_ring,
+				struct napi_struct *napi,
+				int budget)
+@@ -███,18 +███,23 @@ static bool ena_xdp_xmit_irq_zc(struct ena_ring *tx_ring,
+	int size, rc, push_len = 0, work_done = 0;
+	struct ena_tx_buffer *tx_info;
+	struct ena_com_buf *ena_buf;
++	u64 total_pkts, total_bytes;
+	u16 next_to_use, req_id;
+-	bool need_wakeup = true;
+	struct xdp_desc desc;
+	dma_addr_t dma;
+
++	total_pkts = total_bytes = 0;
++
++	spin_lock(&tx_ring->xdp_tx_lock);
++
+	while (likely(work_done < budget)) {
+		struct ena_com_tx_ctx ena_tx_ctx = {};
+
+-		/* We assume the maximum number of descriptors, which is two
+-		 * (meta data included)
++		/* To align with the network stack path (.ndo_start_xmit) we
++		 * leave the same amount of empty space in the SQ.
+		 */
+-		if (unlikely(!ena_com_sq_have_enough_space(tx_ring->ena_com_io_sq, 2)))
++		if (unlikely(!ena_com_sq_have_enough_space(
++			    tx_ring->ena_com_io_sq, tx_ring->sgl_size + 2)))
+			break;
+
+		if (!xsk_tx_peek_desc(xsk_pool, &desc))
+@@ -███,22 +███,21 @@ static bool ena_xdp_xmit_irq_zc(struct ena_ring *tx_ring,
+			ena_tx_ctx.header_len = push_len;
+
+			size -= push_len;
+-			if (!size)
+-				goto xmit_desc;
+		}
+
+-		/* Pass the rest of the descriptor as a DMA address. Assuming
+-		 * single page descriptor.
+-		 */
+-		dma  = xsk_buff_raw_get_dma(xsk_pool, desc.addr);
+-		ena_buf = tx_info->bufs;
+-		ena_buf->paddr = dma + push_len;
+-		ena_buf->len = size;
++		if (size) {
++			/* Pass the rest of the descriptor as a DMA address. Assuming
++			 * single page descriptor.
++			 */
++			dma  = xsk_buff_raw_get_dma(xsk_pool, desc.addr);
++			ena_buf = tx_info->bufs;
++			ena_buf->paddr = dma + push_len;
++			ena_buf->len = size;
+
+-		ena_tx_ctx.ena_bufs = ena_buf;
+-		ena_tx_ctx.num_bufs = 1;
++			ena_tx_ctx.ena_bufs = ena_buf;
++			ena_tx_ctx.num_bufs = 1;
++		}
+
+-xmit_desc:
+		ena_tx_ctx.req_id = req_id;
+
+		netif_dbg(tx_ring->adapter, tx_queued, tx_ring->netdev,
+@@ -███,21 +███,25 @@ static bool ena_xdp_xmit_irq_zc(struct ena_ring *tx_ring,
+		if (rc)
+			break;
+
++		total_pkts++;
++		total_bytes += desc.len;
++
+		work_done++;
+	}
+
+	if (work_done) {
++		u64_stats_update_begin(&tx_ring->syncp);
++		tx_ring->tx_stats.xsk_cnt += total_pkts;
++		tx_ring->tx_stats.xsk_bytes += total_bytes;
++		u64_stats_update_end(&tx_ring->syncp);
++
+		xsk_tx_release(xsk_pool);
+		ena_ring_tx_doorbell(tx_ring);
+	}
+
+-	if (work_done == budget) {
+-		need_wakeup = false;
+-		if (xsk_uses_need_wakeup(xsk_pool))
+-			xsk_clear_tx_need_wakeup(xsk_pool);
+-	}
++	spin_unlock(&tx_ring->xdp_tx_lock);
+
+-	return need_wakeup;
++	return work_done < budget;
+ }
+
+ static struct sk_buff *ena_xdp_rx_skb_zc(struct ena_ring *rx_ring, struct xdp_buff *xdp)
+@@ -███,9 +███,8 @@ static struct sk_buff *ena_xdp_rx_skb_zc(struct ena_ring *rx_ring, struct xdp_bu
+	data_addr = xdp->data;
+
+	/* allocate a skb to store the frags */
+-	skb = __napi_alloc_skb(rx_ring->napi,
+-			       headroom + data_len,
+-			       GFP_ATOMIC | __GFP_NOWARN);
++	skb = napi_alloc_skb(rx_ring->napi,
++			     headroom + data_len);
+	if (unlikely(!skb)) {
+		ena_increase_stat(&rx_ring->rx_stats.skb_alloc_fail, 1,
+				  &rx_ring->syncp);
+@@ -███,9 +███,8 @@ static struct sk_buff *ena_xdp_rx_skb_zc(struct ena_ring *rx_ring, struct xdp_bu
+	return skb;
+ }
+
+-static int ena_xdp_clean_rx_irq_zc(struct ena_ring *rx_ring,
+-				   struct napi_struct *napi,
+-				   int budget)
++static bool ena_xdp_clean_rx_irq_zc(struct ena_ring *rx_ring,
++				    struct napi_struct *napi, int budget)
+ {
+	int i, refill_required, work_done, refill_threshold, pkt_copy;
+	u16 next_to_clean = rx_ring->next_to_clean;
+@@ -███,7 +███,8 @@ static int ena_xdp_clean_rx_irq_zc(struct ena_ring *rx_ring,
+		/* First descriptor might have an offset set by the device */
+		rx_info = &rx_ring->rx_buffer_info[ena_rx_ctx.ena_bufs[0].req_id];
+		xdp = rx_info->xdp;
+-		xdp->data += ena_rx_ctx.pkt_offset;
++		xdp->data = xdp->data_hard_start + rx_ring->rx_headroom +
++			    ena_rx_ctx.pkt_offset;
+		xdp->data_end = xdp->data + ena_rx_ctx.ena_bufs[0].len;
+		xsk_buff_dma_sync_for_cpu(xdp, rx_ring->xsk_pool);
+
+@@ -███,13 +███,10 @@ static int ena_xdp_clean_rx_irq_zc(struct ena_ring *rx_ring,
+					"xdp: dropped unsupported multi-buffer packets\n");
+			ena_increase_stat(&rx_ring->rx_stats.xdp_drop, 1, &rx_ring->syncp);
+			xdp_verdict = ENA_XDP_DROP;
+-			goto skip_xdp_prog;
+-		}
+-
+-		if (likely(xdp_prog_present))
++		} else if (likely(xdp_prog_present)) {
+			xdp_verdict = ena_xdp_execute(rx_ring, xdp);
++		}
+
+-skip_xdp_prog:
+		/* Note that there can be several descriptors, since device
+		 * might not honor MTU
+		 */
+@@ -███,15 +███,17 @@ static int ena_xdp_clean_rx_irq_zc(struct ena_ring *rx_ring,
+			ena_reset_device(adapter, ENA_REGS_RESET_TOO_MANY_RX_DESCS);
+		} else if (rc == -EIO) {
+			ena_increase_stat(&rx_ring->rx_stats.bad_req_id, 1, &rx_ring->syncp);
++			ena_get_and_dump_head_rx_cdesc(rx_ring->ena_com_io_cq);
+			ena_reset_device(adapter, ENA_REGS_RESET_INV_RX_REQ_ID);
+		} else if (rc == -EFAULT) {
++			ena_get_and_dump_head_rx_cdesc(rx_ring->ena_com_io_cq);
+			ena_reset_device(adapter, ENA_REGS_RESET_RX_DESCRIPTOR_MALFORMED);
+		}
+
+		return 0;
+	}
+
+-	return work_done;
++	return work_done < budget;
+ }
+
+ #endif /* ENA_AF_XDP_SUPPORT */
+@@ -███,23 +███,33 @@ int ena_xdp_io_poll(struct napi_struct *napi, int budget)
+		return 0;
+	}
+
++#ifndef ENA_AF_XDP_SUPPORT
+	work_done = ena_clean_xdp_irq(tx_ring, budget);
+
+-#ifdef ENA_AF_XDP_SUPPORT
+-	/* Take XDP work into account */
+-	needs_wakeup &= work_done < budget;
+-
+-	if (!ENA_IS_XSK_RING(tx_ring))
+-		goto polling_done;
+-
+-	rx_ring = ena_napi->rx_ring;
++#else
++	if (!ENA_IS_XSK_RING(tx_ring)) {
++		work_done = ena_clean_xdp_irq(tx_ring, budget);
++	} else {
++		needs_wakeup &= ena_xdp_clean_tx_zc(tx_ring, budget);
++
++		needs_wakeup &= ena_xdp_xmit_irq_zc(tx_ring, napi, budget);
++		if (xsk_uses_need_wakeup(tx_ring->xsk_pool)) {
++			if (needs_wakeup) {
++				xsk_set_tx_need_wakeup(tx_ring->xsk_pool);
++				ena_increase_stat(
++					&tx_ring->tx_stats.xsk_need_wakeup_set,
++					1, &tx_ring->syncp);
++			} else {
++				xsk_clear_tx_need_wakeup(tx_ring->xsk_pool);
++			}
++		}
+
+-	needs_wakeup &= ena_xdp_xmit_irq_zc(tx_ring, napi, budget);
++		rx_ring = ena_napi->rx_ring;
+
+-	work_done = ena_xdp_clean_rx_irq_zc(rx_ring, napi, budget);
+-	needs_wakeup &= work_done < budget;
++		work_done = ena_xdp_clean_rx_irq_zc(rx_ring, napi, budget);
++		needs_wakeup &= work_done < budget;
++	}
+
+-polling_done:
+ #endif /* ENA_AF_XDP_SUPPORT */
+	/* If the device is about to reset or down, avoid unmask
+	 * the interrupt and return 0 so NAPI won't reschedule
+diff --git a/drivers/amazon/net/ena/ena_xdp.h b/drivers/amazon/net/ena/ena_xdp.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/ena_xdp.h
++++ b/drivers/amazon/net/ena/ena_xdp.h
+@@ -███,6 +███,6 @@
+ /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
+-/*
+- * Copyright 2015-2021 Amazon.com, Inc. or its affiliates. All rights reserved.
++/* Copyright (c) Amazon.com, Inc. or its affiliates.
++ * All rights reserved.
+  */
+
+ #ifndef ENA_XDP_H
+@@ -███,15 +███,20 @@ enum ENA_XDP_ACTIONS {
+	ENA_XDP_DROP		= BIT(2)
+ };
+
++#ifdef ENA_HAVE_NETDEV_XDP_ACT_XSK_ZEROCOPY
++#define ENA_XDP_FEATURES (NETDEV_XDP_ACT_BASIC | \
++			  NETDEV_XDP_ACT_REDIRECT | \
++			  NETDEV_XDP_ACT_XSK_ZEROCOPY)
++#else
+ #define ENA_XDP_FEATURES (NETDEV_XDP_ACT_BASIC | \
+			  NETDEV_XDP_ACT_REDIRECT)
++#endif
+
+ #define ENA_XDP_FORWARDED (ENA_XDP_TX | ENA_XDP_REDIRECT)
+
+-int ena_setup_and_create_all_xdp_queues(struct ena_adapter *adapter);
+ void ena_xdp_exchange_program_rx_in_range(struct ena_adapter *adapter,
+					  struct bpf_prog *prog,
+-					  int first, int count);
++					  int first, int last);
+ int ena_xdp_io_poll(struct napi_struct *napi, int budget);
+ int ena_xdp_xmit_frame(struct ena_ring *tx_ring,
+		       struct ena_adapter *adapter,
+diff --git a/drivers/amazon/net/ena/kcompat.h b/drivers/amazon/net/ena/kcompat.h
+index ███████..███████ 100644
+--- a/drivers/amazon/net/ena/kcompat.h
++++ b/drivers/amazon/net/ena/kcompat.h
+@@ -███,6 +███,6 @@
+ /*******************************************************************************
+-Modified by Amazon 2015-2016.
+-Copyright 2015-2016, Amazon.com, Inc. or its affiliates. All Rights Reserved.
++Modified by Amazon.
++Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+ Modifications subject to the terms and conditions of the GNU General
+ Public License, version 2.
+@@ -███,6 +███,9 @@ Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
+ #include <linux/vmalloc.h>
+ #include <linux/udp.h>
+ #include <linux/u64_stats_sync.h>
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)
++#include <linux/bitfield.h>
++#endif
+
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,6,0)
+ #include <linux/sizes.h>
+@@ -███,7 +███,6 @@ static inline void ioremap_release(struct device *dev, void *res)
+	iounmap(*(void __iomem **)res);
+ }
+
+-
+ static inline void __iomem *devm_ioremap_wc(struct device *dev,
+					    resource_size_t offset,
+					    resource_size_t size)
+@@ -███,10 +███,11 @@ static inline bool ktime_after(const ktime_t cmp1, const ktime_t cmp2)
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0)) && \
+	!(RHEL_RELEASE_CODE && \
+	(RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7, 2)))
++#define ENA_KCOMAPT_NAPI_ALLOC_SKB
+ static inline struct sk_buff *napi_alloc_skb(struct napi_struct *napi,
+					     unsigned int length)
+ {
+-	return netdev_alloc_skb_ip_align(napi->dev, length);
++	return __netdev_alloc_skb_ip_align(napi->dev, length, GFP_ATOMIC | __GFP_NOWARN);
+ }
+ #endif
+
+@@ -███,11 +███,11 @@ static inline void ena_netif_napi_add(struct net_device *dev,
+ #define ENA_LARGE_LLQ_ETHTOOL
+ #endif
+
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)
+-#include <linux/bitfield.h>
+-#define ENA_FIELD_GET(value, mask, offset) FIELD_GET(mask, value)
+-#else
+-#define ENA_FIELD_GET(value, mask, offset) ((typeof(mask))((value & mask) >> offset))
++#ifndef FIELD_GET
++#define FIELD_GET(mask, value) ((typeof(mask))(((value) & (mask)) >> (__builtin_ffsll(mask) - 1)))
++#endif
++#ifndef FIELD_PREP
++#define FIELD_PREP(mask, value) ((typeof(mask))(((value) << (__builtin_ffsll(mask) - 1)) & (mask)))
+ #endif
+
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
+@@ -███,4 +███,17 @@ static inline int irq_update_affinity_hint(unsigned int irq, const struct cpumas
+ #define ethtool_puts ethtool_sprintf
+ #endif /* ENA_HAVE_ETHTOOL_PUTS */
+
++#ifdef ENA_XSK_BUFF_DMA_SYNC_SINGLE_ARG
++#include <net/xdp_sock_drv.h>
++#define xsk_buff_dma_sync_for_cpu(xdp, xsk_pool) xsk_buff_dma_sync_for_cpu(xdp)
++#endif /* ENA_XSK_BUFF_DMA_SYNC_SINGLE_ARG */
++
++#if defined(ENA_NAPI_ALLOC_SKB_EXPLICIT_GFP_MASK) && !defined(ENA_KCOMAPT_NAPI_ALLOC_SKB)
++#define napi_alloc_skb(napi, len) __napi_alloc_skb(napi, len, GFP_ATOMIC | __GFP_NOWARN)
++#endif /* ENA_NAPI_ALLOC_SKB_EXPLICIT_GFP_MASK && !ENA_KCOMAPT_NAPI_ALLOC_SKB*/
++
++#ifndef RX_CLS_FLOW_WAKE
++#define RX_CLS_FLOW_WAKE	0xfffffffffffffffeULL
++#endif /* RX_CLS_FLOW_WAKE */
++
+ #endif /* _KCOMPAT_H_ */
+-- 
+2.40.1
