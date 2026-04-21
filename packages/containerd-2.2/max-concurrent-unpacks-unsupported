@@ -1,0 +1,3 @@
+[required-extensions]
+container-runtime = { version = "v1", optional = true }
++++
