@@ -56,6 +56,7 @@ Source13: etc-kubernetes-pki-private.mount
 Source14: credential-provider-config-yaml
 Source15: logdog.kubelet.conf
 Source16: multi-user-uphold-kubelet.conf
+Source17: kubelet-extra-config
 
 # ExecStartPre drop-ins
 Source20: prestart-load-pause-ctr.conf
@@ -165,6 +166,7 @@ install -m 0644 %{S:7} %{buildroot}%{_cross_templatedir}/kubelet-bootstrap-kubec
 install -m 0644 %{S:11} %{buildroot}%{_cross_templatedir}/kubelet-server-crt
 install -m 0644 %{S:12} %{buildroot}%{_cross_templatedir}/kubelet-server-key
 install -m 0644 %{S:14} %{buildroot}%{_cross_templatedir}/credential-provider-config-yaml
+install -m 0644 %{S:17} %{buildroot}%{_cross_templatedir}/kubelet-extra-config
 
 install -d %{buildroot}%{_cross_tmpfilesdir}
 install -p -m 0644 %{S:8} %{buildroot}%{_cross_tmpfilesdir}/kubernetes.conf
@@ -209,6 +211,7 @@ install -p -m 0644 %{S:102} %{buildroot}%{_cross_templatedir}/pod-infra-containe
 %{_cross_templatedir}/kubelet-server-crt
 %{_cross_templatedir}/kubelet-server-key
 %{_cross_templatedir}/credential-provider-config-yaml
+%{_cross_templatedir}/kubelet-extra-config
 %{_cross_tmpfilesdir}/kubernetes.conf
 %{_cross_sysctldir}/90-kubelet.conf
 %dir %{_cross_libexecdir}/kubernetes
