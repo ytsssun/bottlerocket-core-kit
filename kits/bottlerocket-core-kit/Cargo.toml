@@ -134,6 +134,7 @@ rocm-k8s-device-plugin = { path = "../../packages/rocm-k8s-device-plugin" }
 rocm-container-toolkit = { path = "../../packages/rocm-container-toolkit" }
 rottweiler = { path = "../../packages/rottweiler" }
 runc = { path = "../../packages/runc" }
+runwasi-shims = { path = "../../packages/runwasi-shims" }
 selinux-policy = { path = "../../packages/selinux-policy" }
 soci-snapshotter = { path = "../../packages/soci-snapshotter" }
 static-pods = { path = "../../packages/static-pods" }

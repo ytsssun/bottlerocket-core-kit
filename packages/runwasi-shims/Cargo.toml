@@ -1,0 +1,22 @@
+[package]
+name = "runwasi-shims"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "../build.rs"
+
+[lib]
+path = "../packages.rs"
+
+[package.metadata.build-package]
+package-name = "runwasi-shims"
+releases-url = "https://github.com/containerd/runwasi/releases"
+
+[[package.metadata.build-package.external-files]]
+url = "https://github.com/containerd/runwasi/archive/eb9967aae75bfc8ddf810590810f6962a8dc7c37.tar.gz"
+path = "runwasi-eb9967aa.tar.gz"
+sha512 = "0ed8800bd76a7e48ff2c6d3708dfbd8db5467148d53dea7fb8d6f5bd9fd70b0f148803c53385ccd6015248f81b879bede8452945b382d2bde656b667f0f20f0d"
+
+[build-dependencies]
+glibc = { path = "../glibc" }
+libseccomp = { path = "../libseccomp" }

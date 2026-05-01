@@ -1,0 +1,70 @@
+/.*	system_u:object_r:os_t:s0
+/.*/usr/bin/mount	--	system_u:object_r:mount_exec_t:s0
+/.*/usr/bin/whippet	--	system_u:object_r:bus_exec_t:s0
+/.*/usr/sbin/chronyd	--	system_u:object_r:clock_exec_t:s0
+/.*/usr/bin/apiserver	--	system_u:object_r:api_exec_t:s0
+/.*/usr/bin/storewolf	--	system_u:object_r:api_exec_t:s0
+/.*/usr/bin/rottweiler	--	system_u:object_r:api_exec_t:s0
+/.*/usr/bin/dbus-broker.*	--	system_u:object_r:bus_exec_t:s0
+/.*/usr(/fips)?/bin/runc.*	--	system_u:object_r:runtime_exec_t:s0
+/.*/usr/lib/systemd/systemd	--	system_u:object_r:init_exec_t:s0
+/.*/usr(/fips)?/bin/cfsignal	--	system_u:object_r:api_exec_t:s0
+/.*/usr(/fips)?/bin/docker.*	--	system_u:object_r:runtime_exec_t:s0
+/.*/usr(/fips)?/bin/host-ctr	--	system_u:object_r:runtime_exec_t:s0
+/.*/usr(/fips)?/bin/migrator	--	system_u:object_r:api_exec_t:s0
+/.*/usr(/fips)?/bin/shibaken	--	system_u:object_r:api_exec_t:s0
+/.*/usr/bin/thar-be-settings	--	system_u:object_r:api_exec_t:s0
+/.*/usr/bin/early-boot-config	--	system_u:object_r:api_exec_t:s0
+/.*/usr(/fips)?/bin/containerd.*	--	system_u:object_r:runtime_exec_t:s0
+/.*/usr/lib/systemd/systemd-executor	--	system_u:object_r:init_exec_t:s0
+/.*/usr(/fips)?/bin/soci-snapshotter.*	--	system_u:object_r:runtime_exec_t:s0
+/.*/usr/bin/containerd-shim-wasmtime.*	--	system_u:object_r:wasm_runtime_exec_t:s0
+/.*/usr/lib/systemd/systemd-networkd.*	--	system_u:object_r:network_exec_t:s0
+/dev/.*	<<none>>
+/etc/.*	<<none>>
+/mnt/.*	<<none>>
+/opt/.*	<<none>>
+/run/.*	<<none>>
+/sys/.*	<<none>>
+/tmp/.*	<<none>>
+/var/.*	<<none>>
+/proc/.*	<<none>>
+/local/.*	<<none>>
+/media/.*	<<none>>
+/var/lib/chrony/.*	system_u:object_r:measure_t:s0
+/var/lib/netdog/.*	system_u:object_r:lease_t:s0
+/var/lib/selinux/.*	system_u:object_r:state_t:s0
+/var/lib/systemd/.*	system_u:object_r:state_t:s0
+/var/log/journal/.*	system_u:object_r:state_t:s0
+/var/lib/civ-plugins/.*	system_u:object_r:state_t:s0
+/var/lib/cni-plugins/.*	system_u:object_r:state_t:s0
+/var/lib/csi-helpers/.*	system_u:object_r:state_t:s0
+/var/lib/kernel-devel/.*	system_u:object_r:state_t:s0
+/local/host-containers/.*	system_u:object_r:secret_t:s0
+/var/lib/kernel-modules/.*	system_u:object_r:state_t:s0
+/local/bootstrap-containers/.*	system_u:object_r:secret_t:s0
+/dev	system_u:object_r:any_t:s0
+/etc	system_u:object_r:etc_t:s0
+/mnt	system_u:object_r:local_t:s0
+/opt	system_u:object_r:local_t:s0
+/run	system_u:object_r:any_t:s0
+/sys	system_u:object_r:any_t:s0
+/tmp	system_u:object_r:any_t:s0
+/var	system_u:object_r:local_t:s0
+/proc	system_u:object_r:proc_t:s0
+/local	system_u:object_r:local_t:s0
+/media	system_u:object_r:local_t:s0
+/media/cdrom	system_u:object_r:local_t:s0
+/var/lib/chrony	system_u:object_r:measure_t:s0
+/var/lib/netdog	system_u:object_r:lease_t:s0
+/var/lib/selinux	system_u:object_r:state_t:s0
+/var/lib/systemd	system_u:object_r:state_t:s0
+/var/log/journal	system_u:object_r:state_t:s0
+/var/lib/civ-plugins	system_u:object_r:state_t:s0
+/var/lib/cni-plugins	system_u:object_r:state_t:s0
+/var/lib/csi-helpers	system_u:object_r:state_t:s0
+/var/lib/kernel-devel	system_u:object_r:state_t:s0
+/local/host-containers	system_u:object_r:secret_t:s0
+/var/lib/kernel-modules	system_u:object_r:state_t:s0
+/local/bootstrap-containers	system_u:object_r:secret_t:s0
+/var/lib/systemd/random-seed	system_u:object_r:secret_t:s0

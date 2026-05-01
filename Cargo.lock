@@ -194,6 +194,7 @@ dependencies = [
  "rocm-k8s-device-plugin",
  "rottweiler",
  "runc",
+ "runwasi-shims",
  "selinux-policy",
  "soci-snapshotter",
  "static-pods",
@@ -1094,6 +1095,14 @@ dependencies = [
 
 [[package]]
 name = "runc"
+version = "0.1.0"
+dependencies = [
+ "glibc",
+ "libseccomp",
+]
+
+[[package]]
+name = "runwasi-shims"
 version = "0.1.0"
 dependencies = [
  "glibc",

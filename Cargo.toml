@@ -121,6 +121,7 @@ members = [
   "packages/rocm-container-toolkit",
   "packages/rocm-k8s-device-plugin",
   "packages/runc",
+  "packages/runwasi-shims",
   "packages/selinux-policy",
   "packages/soci-snapshotter",
   "packages/static-pods",

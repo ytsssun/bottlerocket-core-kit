@@ -87,9 +87,22 @@
 (allow init_t runtime_t (processes (transform)))
 (allow runtime_t runtime_exec_t (file (entrypoint)))
 
+; PID 1 starts wasm container runtimes as "wasm_runtime_t".
+(typetransition init_t wasm_runtime_exec_t process wasm_runtime_t)
+(rangetransition init_t wasm_runtime_exec_t process s0-c0-c1023)
+(allow init_t wasm_runtime_t (processes (transform)))
+(allow wasm_runtime_t wasm_runtime_exec_t (file (entrypoint)))
+
+; containerd (runtime_t) starts the wasmtime shim as "wasm_runtime_t".
+(typetransition runtime_t wasm_runtime_exec_t process wasm_runtime_t)
+(rangetransition runtime_t wasm_runtime_exec_t process s0-c0-c1023)
+(allow runtime_t wasm_runtime_t (processes (transform)))
+
+
 ; `runc` can transition to any of the container subject labels, for
 ; a process started from any of the container object labels.
 (allow runtime_t container_s (processes (transform)))
+(allow wasm_runtime_t container_s (processes (transform)))
 (allow container_s container_exec_o (file (entrypoint)))
 
 ; `runc` starts container processes as "control_t" by default, but it
@@ -105,9 +118,16 @@
 (typetransition runtime_t privileged_container_exec_o process control_t)
 (rangetransition runtime_t privileged_container_exec_o process s0-c0-c1023)
 
+; Wasm runtimes also transition to container labels.
+(typetransition wasm_runtime_t privileged_container_exec_o process control_t)
+(rangetransition wasm_runtime_t privileged_container_exec_o process s0-c0-c1023)
+
 ; Some processes should transition to unprivileged containers by default.
 (typetransition runtime_t unprivileged_container_exec_o process container_t)
 (rangetransition runtime_t unprivileged_container_exec_o process s0)
+
+(typetransition wasm_runtime_t unprivileged_container_exec_o process container_t)
+(rangetransition wasm_runtime_t unprivileged_container_exec_o process s0)
 
 ; If PID 1 is used to invoke a CSI helper directly, it should also
 ; run as a privileged container.
@@ -129,6 +149,9 @@
 (typetransition runtime_t pipe_fs_t fifo_file runtime_fifo_t)
 (rangetransition runtime_t pipe_fs_t fifo_file s0)
 
+(typetransition wasm_runtime_t pipe_fs_t fifo_file runtime_fifo_t)
+(rangetransition wasm_runtime_t pipe_fs_t fifo_file s0)
+
 ; Allow runtimes to mutate their own pipes.
 (allow runtime_s runtime_fifo_t (files (mutate)))
 
@@ -145,6 +168,11 @@
 (typetransition runtime_t local_t dir "io.containerd.snapshotter.v1.overlayfs" cache_t)
 ; ... docker's image layers
 (typetransition runtime_t local_t dir "overlay2" cache_t)
+
+; Wasm runtimes also manage containerd storage.
+(typetransition wasm_runtime_t local_t dir "io.containerd.content.v1.content" cache_t)
+(typetransition wasm_runtime_t local_t dir "io.containerd.metadata.v1.bolt" cache_t)
+(typetransition wasm_runtime_t local_t dir "io.containerd.snapshotter.v1.overlayfs" cache_t)
 
 ; If a system process creates a directory for host or bootstrap container
 ; state, it receives the "secret_t" label.
@@ -356,8 +384,12 @@
 (allow container_s self (processes (relax)))
 (allow container_s global (files (relax)))
 
-; Host processes should not need to relax security constraints.
-(neverallow host_s global (processes (relax)))
+; Host processes should not need to relax security constraints,
+; except wasm runtimes which need execmem for JIT compilation.
+(allow wasm_runtime_t self (process (execmem)))
+(typeattribute host_no_jit_s)
+(typeattributeset host_no_jit_s (xor (host_s) (wasm_runtime_t)))
+(neverallow host_no_jit_s global (processes (relax)))
 (neverallow host_s global (files (relax)))
 
 ; Files and directories that reside on the dm-verity backed root
